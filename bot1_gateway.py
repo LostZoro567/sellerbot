@@ -14,7 +14,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT1_TOKEN")
 SECRET_CODE = os.getenv("SECRET_INVITE_CODE")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-BOT2_USERNAME = "ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username
+
+# IMPORTANT: Change this to your actual 2nd Bot's username (without the @)
+BOT2_USERNAME = "YourBot2Username" 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -32,10 +34,13 @@ class AddCourseFSM(StatesGroup):
 # ==========================================
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, command: CommandObject):
+    # Check if the user used the secret link
     if command.args == SECRET_CODE:
+        # Fetch active courses from the database
         response = supabase.table("courses").select("course_id, title").execute()
         courses = response.data
         
+        # Build the menu dynamically
         builder = InlineKeyboardBuilder()
         for course in courses:
             builder.row(InlineKeyboardButton(
@@ -56,7 +61,7 @@ async def handle_start(message: types.Message, command: CommandObject):
 @dp.message(Command("addnew"))
 async def cmd_addnew(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
-        return
+        return # Ignore non-admins silently
         
     await message.answer("🛠️ Let's add a new course.\n\nFirst, type a unique internal ID (e.g., course_7, python_basics):")
     await state.set_state(AddCourseFSM.waiting_for_course_id)
