@@ -14,7 +14,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT1_TOKEN")
 SECRET_CODE = os.getenv("SECRET_INVITE_CODE")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-BOT2_USERNAME = "ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username (without the @)
+BOT2_USERNAME = "ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -33,11 +33,9 @@ class AddCourseFSM(StatesGroup):
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, command: CommandObject):
     if command.args == SECRET_CODE:
-        # Fetch all active courses from Supabase
         response = supabase.table("courses").select("course_id, title").execute()
         courses = response.data
         
-        # Build the inline keyboard dynamically
         builder = InlineKeyboardBuilder()
         for course in courses:
             builder.row(InlineKeyboardButton(
@@ -45,9 +43,8 @@ async def handle_start(message: types.Message, command: CommandObject):
                 url=f"https://t.me/{BOT2_USERNAME}?start={course['course_id']}"
             ))
             
-        await message.answer_photo(
-            photo="https://i.ibb.co/992CydJp/a45125660b00.jpg", # Replace with actual URL or file ID
-            caption="course below.",
+        await message.answer(
+            text="Welcome to the private portal! Select a course below.",
             reply_markup=builder.as_markup()
         )
     else:
@@ -59,7 +56,7 @@ async def handle_start(message: types.Message, command: CommandObject):
 @dp.message(Command("addnew"))
 async def cmd_addnew(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
-        return # Ignore non-admins silently
+        return
         
     await message.answer("🛠️ Let's add a new course.\n\nFirst, type a unique internal ID (e.g., course_7, python_basics):")
     await state.set_state(AddCourseFSM.waiting_for_course_id)
@@ -85,13 +82,12 @@ async def process_price(message: types.Message, state: FSMContext):
 @dp.message(AddCourseFSM.waiting_for_bot2_text)
 async def process_bot2_text(message: types.Message, state: FSMContext):
     await state.update_data(bot2_text=message.text)
-    await message.answer("Almost done! Finally, send the Image (Photo) that Bot 2 should display with the text.")
+    await message.answer("Almost done! Finally, paste a **Public Image URL** (like a Telegraph link).\n\nExample: `https://telegra.ph/file/abcd123.jpg`")
     await state.set_state(AddCourseFSM.waiting_for_bot2_image)
 
-@dp.message(AddCourseFSM.waiting_for_bot2_image, F.photo)
+@dp.message(AddCourseFSM.waiting_for_bot2_image)
 async def process_bot2_image(message: types.Message, state: FSMContext):
-    # Get highest resolution photo file_id
-    file_id = message.photo[-1].file_id 
+    image_url = message.text.strip()
     data = await state.get_data()
     
     try:
@@ -100,7 +96,7 @@ async def process_bot2_image(message: types.Message, state: FSMContext):
             "title": data['title'],
             "price": data['price'],
             "bot2_text": data['bot2_text'],
-            "bot2_image_id": file_id
+            "bot2_image_id": image_url
         }).execute()
         
         await message.answer(f"✅ Success! Course '{data['title']}' has been added to the database.")
