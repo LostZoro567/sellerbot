@@ -24,23 +24,21 @@ async def handle_course_selection(message: types.Message, command: CommandObject
         await message.answer("Please start this bot using a valid course link.")
         return
 
-    # Fetch specific course details from DB
     response = supabase.table("courses").select("*").eq("course_id", course_id).execute()
     
     if response.data:
         course = response.data[0]
         
-        # Log the pending transaction
         supabase.table("transactions").insert({
             "telegram_user_id": message.from_user.id,
             "course_id": course_id,
             "status": "pending_payment"
         }).execute()
 
-        # Send dynamic content
+        # Bot 2 uses the Telegraph URL to send the photo
         await message.answer_photo(
             photo=course['bot2_image_id'],
-            caption=f"{course['title']}\n\n{course['bot2_text']}\n\nPrice: {course['price']}\n\nPlease send payment via UPI/PayPal and upload a screenshot here."
+            caption=f"📘 **{course['title']}**\n\n{course['bot2_text']}\n\nPrice: {course['price']}\n\nPlease send payment via UPI/PayPal and upload a screenshot here."
         )
     else:
         await message.answer("Course not found or invalid selection.")
@@ -52,22 +50,19 @@ async def handle_course_selection(message: types.Message, command: CommandObject
 async def handle_payment_screenshot(message: types.Message):
     user_id = message.from_user.id
     
-    # Check for pending transaction
     response = supabase.table("transactions").select("*").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
     
     if not response.data:
         await message.answer("You don't have any pending payments.")
         return
 
-    transaction = response.data[-1] # Get the most recent pending transaction
+    transaction = response.data[-1] 
     trans_id = transaction['id']
     
-    # Update status to awaiting approval
     supabase.table("transactions").update({"status": "awaiting_approval"}).eq("id", trans_id).execute()
 
     await message.answer("Payment screenshot received! Please wait while the admin verifies it.")
 
-    # Forward to Admin
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{trans_id}"),
@@ -92,7 +87,6 @@ async def admin_decision(callback: types.CallbackQuery):
 
     action, trans_id = callback.data.split("_")
     
-    # Fetch transaction details
     response = supabase.table("transactions").select("*").eq("id", trans_id).execute()
     if not response.data:
         await callback.answer("Transaction not found.")
