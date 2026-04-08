@@ -16,7 +16,7 @@ SECRET_CODE = os.getenv("SECRET_INVITE_CODE")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # IMPORTANT: Change this to your actual 2nd Bot's username (without the @)
-BOT2_USERNAME = "YourBot2Username" 
+BOT2_USERNAME = "ExclusiveCollectionVIP_bot" 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
