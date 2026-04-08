@@ -46,8 +46,8 @@ async def handle_start(message: types.Message, command: CommandObject):
             ))
             
         await message.answer_photo(
-            photo="https://example.com/welcome_image.jpg", # Replace with actual URL or file ID
-            caption="Welcome to the private portal! Select a course below.",
+            photo="https://i.ibb.co/992CydJp/a45125660b00.jpg", # Replace with actual URL or file ID
+            caption="course below.",
             reply_markup=builder.as_markup()
         )
     else:
