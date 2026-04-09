@@ -84,7 +84,7 @@ async def show_payment_methods(callback: types.CallbackQuery):
 async def show_specific_payment_details(callback: types.CallbackQuery):
     method = callback.data.split("_")[1]
     
-  keyboard = None 
+    keyboard = None 
     
     # NOTE: Replace all fake Telegraph URLs and payment details with your actual ones!
     if method == "qr":
