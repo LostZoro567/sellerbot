@@ -96,8 +96,7 @@ async def show_specific_payment_details(callback: types.CallbackQuery):
         image_url = "https://i.ibb.co/Gf4dxt28/bdb68f4ab32e.jpg"
         
     elif method == "paypal":
-        text = "🔵 **PayPal Selected**\n\nSend payment to: `Ankitmallick5790@gma  # We leave keyboard blank by default, unless "Others" is clicked
-    keyboail.com`\n\n📸 *Upload your screenshot into this chat after payment.*\n\n⏳ *Auto-closing soon.*"
+        text = "🔵 **PayPal Selected**\n\nSend payment to: `Ankitmallick5790@gmail.com`\n\n📸 *Upload your screenshot into this chat after payment.*\n\n⏳ *Auto-closing soon.*"
         image_url = "https://i.ibb.co/gLPBppVv/1d77334f059d.jpg"
         
     elif method == "crypto":
