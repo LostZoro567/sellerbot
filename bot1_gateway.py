@@ -50,7 +50,7 @@ async def handle_start(message: types.Message, command: CommandObject):
             
         # Change URL to your actual welcome image Telegraph link
         await message.answer_photo(
-            photo="https://telegra.ph/file/your_welcome_image.jpg", 
+            photo="https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg", 
             caption="Welcome to the private portal! Select a course below.",
             reply_markup=builder.as_markup()
         )
