@@ -10,6 +10,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT2_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+BOT1_USERNAME = os.getenv("BOT1_USERNAME", "YourGatewayBotUsername") # Fallback if missing
 AUTO_DELETE_SECONDS = 900  # 15 minutes
 
 bot = Bot(token=BOT_TOKEN)
@@ -28,20 +29,35 @@ async def auto_delete_message(chat_id: int, message_id: int, delay: int):
 # ==========================================
 @dp.message(CommandStart())
 async def handle_course_selection(message: types.Message, command: CommandObject):
-    course_id = command.args
+    payload = command.args
     
-    if not course_id:
+    if not payload:
         return await message.answer("Please start this bot using a valid course link.")
+
+    course_id = payload
+    referrer_id = None
+
+    if "-ref" in payload:
+        course_id, ref_str = payload.split("-ref")
+        referrer_id = int(ref_str)
 
     response = supabase.table("courses").select("*").eq("course_id", course_id).execute()
     
     if response.data:
         course = response.data[0]
+        user_id = message.from_user.id
         
+        # Ensure user has a wallet profile
+        user_res = supabase.table("users").select("*").eq("telegram_user_id", user_id).execute()
+        if not user_res.data:
+            supabase.table("users").insert({"telegram_user_id": user_id, "balance": 0}).execute()
+        
+        # Log pending transaction
         supabase.table("transactions").insert({
-            "telegram_user_id": message.from_user.id,
+            "telegram_user_id": user_id,
             "course_id": course_id,
-            "status": "pending_payment"
+            "status": "pending_payment",
+            "referrer_id": referrer_id
         }).execute()
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -65,16 +81,34 @@ async def handle_course_selection(message: types.Message, command: CommandObject
 # ==========================================
 @dp.callback_query(F.data.startswith("buy_"))
 async def show_payment_methods(callback: types.CallbackQuery):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    course_id = callback.data.split("_")[1]
+    user_id = callback.from_user.id
+    
+    user_res = supabase.table("users").select("balance").eq("telegram_user_id", user_id).execute()
+    balance = float(user_res.data[0]['balance']) if user_res.data else 0
+    
+    course_res = supabase.table("courses").select("price_numeric").eq("course_id", course_id).execute()
+    price_numeric = float(course_res.data[0]['price_numeric']) if course_res.data else 999999
+
+    buttons = [
         [InlineKeyboardButton(text="📷 QR Code", callback_data="pay_qr")],
         [InlineKeyboardButton(text="🟣 Paytm / UPI", callback_data="pay_paytm")],
         [InlineKeyboardButton(text="🔵 PayPal", callback_data="pay_paypal")],
         [InlineKeyboardButton(text="🟠 Crypto (USDT)", callback_data="pay_crypto")],
         [InlineKeyboardButton(text="💬 Others", callback_data="pay_others")]
-    ])
+    ]
+    
+    # If they can afford it with wallet, slide this button to the top
+    if balance >= price_numeric:
+        buttons.insert(0, [InlineKeyboardButton(text="💰 Pay with Wallet", callback_data="pay_wallet")])
+        
+    # The stealth referral button
+    buttons.append([InlineKeyboardButton(text="🎁 Can't afford it?", callback_data="pay_referral")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     await callback.message.edit_caption(
-        caption="🏦 **Select your preferred payment method:**\n\n⏳ *This window auto-closes in 15 minutes.*",
+        caption=f"🏦 **Select your preferred payment method:**\n💳 **Wallet Balance:** ₹{balance}\n\n⏳ *This window auto-closes in 15 minutes.*",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -83,11 +117,67 @@ async def show_payment_methods(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("pay_"))
 async def show_specific_payment_details(callback: types.CallbackQuery):
     method = callback.data.split("_")[1]
-    
+    user_id = callback.from_user.id
     keyboard = None 
     
-    # NOTE: Replace all fake Telegraph URLs and payment details with your actual ones!
-    if method == "qr":
+    if method == "wallet":
+        trans_res = supabase.table("transactions").select("*").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
+        if not trans_res.data:
+            return await callback.answer("No pending transaction found. Please restart.", show_alert=True)
+            
+        transaction = trans_res.data[-1]
+        course_id = transaction['course_id']
+        trans_id = transaction['id']
+        
+        course_res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
+        course = course_res.data[0]
+        price_numeric = float(course['price_numeric'])
+        
+        user_res = supabase.table("users").select("balance").eq("telegram_user_id", user_id).execute()
+        balance = float(user_res.data[0]['balance'])
+        
+        if balance >= price_numeric:
+            new_balance = balance - price_numeric
+            supabase.table("users").update({"balance": new_balance}).eq("telegram_user_id", user_id).execute()
+            supabase.table("transactions").update({"status": "approved_wallet"}).eq("id", trans_id).execute()
+            
+            await callback.message.delete()
+            
+            del_text = course.get('delivery_text', f"✅ Payment verified! Here is your access for {course_id}.")
+            del_file_id = course.get('delivery_file_id')
+            
+            if del_file_id:
+                course_delivery_msg = await bot.send_document(
+                    chat_id=user_id, 
+                    document=del_file_id, 
+                    caption=f"{del_text}\n\n⏳ *This message will self-destruct in 15 minutes.*",
+                    parse_mode="Markdown"
+                )
+            else:
+                course_delivery_msg = await bot.send_message(
+                    chat_id=user_id, 
+                    text=f"{del_text}\n\n⏳ *This message will self-destruct in 15 minutes.*",
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            asyncio.create_task(auto_delete_message(user_id, course_delivery_msg.message_id, AUTO_DELETE_SECONDS))
+            return await callback.answer("✅ Paid with wallet! Course delivered.", show_alert=True)
+        else:
+            return await callback.answer("❌ Insufficient wallet balance.", show_alert=True)
+
+    elif method == "referral":
+        ref_link = f"https://t.me/{BOT1_USERNAME}?start=ref_{user_id}"
+        text = (
+            "🎁 **Earn This For Free!**\n\n"
+            "Share your unique Gateway link below. When someone joins and buys ANY course, "
+            "you instantly get **25%** of their purchase amount added to your wallet.\n\n"
+            "Once your wallet balance covers the price, a '💰 Pay with Wallet' button will automatically appear here!\n\n"
+            f"🔗 **Your Link:**\n`{ref_link}`\n\n"
+            "⏳ *Auto-closing soon.*"
+        )
+        image_url = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg" # Change to a gift box image
+        
+    elif method == "qr":
         text = "📷 **QR Code Selected**\n\nScan the QR code image to pay.\n\n📸 *Upload your screenshot into this chat after payment.*\n\n⏳ *Auto-closing soon.*"
         image_url = "https://i.ibb.co/bMP4nQ7S/ee15c8361b23.jpg"
         
@@ -105,23 +195,12 @@ async def show_specific_payment_details(callback: types.CallbackQuery):
         
     elif method == "others":
         text = "💬 **Other Payment Methods**\n\nFor alternative methods, please click the button below to message me directly.\n\n📸 *Once we agree on a payment and you pay, upload the screenshot right here.*"
-        # You can use a picture of a headset/support icon for this one
         image_url = "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg" 
-        
-        # This generates a button linking straight to your personal Telegram DM!
-        # Change 'YourPersonalUsername' to your actual Telegram handle (without the @ symbol)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="👤 Message Admin", url="https://t.me/ProSeller_69")]
         ])
 
-    new_media = InputMediaPhoto(
-        media=image_url, 
-        caption=text, 
-        parse_mode="Markdown"
-    )
-
-    # We pass the keyboard here. If it's normal payment, it removes the buttons. 
-    # If it's 'Others', it attaches the URL button.
+    new_media = InputMediaPhoto(media=image_url, caption=text, parse_mode="Markdown")
     await callback.message.edit_media(media=new_media, reply_markup=keyboard)
     await callback.answer()
 
@@ -159,7 +238,7 @@ async def handle_payment_screenshot(message: types.Message):
     )
 
 # ==========================================
-# STEP 3: ADMIN VERIFIES & AUTO-DELIVERS
+# STEP 3: ADMIN VERIFIES & PAYOUT
 # ==========================================
 @dp.callback_query(F.data.startswith("approve_") | F.data.startswith("reject_"))
 async def admin_decision(callback: types.CallbackQuery):
@@ -175,6 +254,7 @@ async def admin_decision(callback: types.CallbackQuery):
     transaction = response.data[0]
     user_id = transaction['telegram_user_id']
     course_id = transaction['course_id']
+    referrer_id = transaction.get('referrer_id')
 
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
@@ -182,6 +262,26 @@ async def admin_decision(callback: types.CallbackQuery):
         course_response = supabase.table("courses").select("*").eq("course_id", course_id).execute()
         course = course_response.data[0]
         
+        # --- REFERRAL PAYOUT LOGIC ---
+        if referrer_id:
+            price_num = float(course.get('price_numeric', 0))
+            if price_num > 0:
+                commission = price_num * 0.25
+                ref_res = supabase.table("users").select("balance").eq("telegram_user_id", referrer_id).execute()
+                
+                if ref_res.data:
+                    current_balance = float(ref_res.data[0]['balance'])
+                    supabase.table("users").update({"balance": current_balance + commission}).eq("telegram_user_id", referrer_id).execute()
+                    
+                    try:
+                        await bot.send_message(
+                            chat_id=referrer_id,
+                            text=f"🎉 **Referral Bonus!**\n\nSomeone purchased a course using your link! **₹{commission}** has been added to your wallet."
+                        )
+                    except:
+                        pass # Referrer might have blocked the bot
+        # -----------------------------
+
         del_text = course.get('delivery_text', f"✅ Payment verified! Here is your access for {course_id}.")
         del_file_id = course.get('delivery_file_id')
         
