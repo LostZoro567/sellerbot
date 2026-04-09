@@ -25,6 +25,7 @@ class AddCourseFSM(StatesGroup):
     waiting_for_course_id = State()
     waiting_for_title = State()
     waiting_for_price = State()
+    waiting_for_price_numeric = State() # NEW STATE
     waiting_for_bot2_text = State()
     waiting_for_bot2_image = State()
     waiting_for_delivery_content = State()
@@ -33,22 +34,35 @@ class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
 
 # ==========================================
-# USER FLOW: DYNAMIC LOBBY
+# USER FLOW: DYNAMIC LOBBY & REFERRALS
 # ==========================================
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, command: CommandObject):
-    if command.args == SECRET_CODE:
+    args = command.args or ""
+    referrer_id = None
+    is_authorized = False
+
+    if args == SECRET_CODE:
+        is_authorized = True
+    elif args.startswith("ref_"):
+        is_authorized = True
+        referrer_id = args.split("_")[1]
+
+    if is_authorized:
         response = supabase.table("courses").select("course_id, title").execute()
         courses = response.data
         
         builder = InlineKeyboardBuilder()
         for course in courses:
+            payload = course['course_id']
+            if referrer_id:
+                payload += f"-ref{referrer_id}"
+                
             builder.row(InlineKeyboardButton(
                 text=f"📘 {course['title']}", 
-                url=f"https://t.me/{BOT2_USERNAME}?start={course['course_id']}"
+                url=f"https://t.me/{BOT2_USERNAME}?start={payload}"
             ))
             
-        # Change URL to your actual welcome image Telegraph link
         await message.answer_photo(
             photo="https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg", 
             caption="Welcome to the private portal! Select a course below.",
@@ -76,14 +90,24 @@ async def process_course_id(message: types.Message, state: FSMContext):
 @dp.message(AddCourseFSM.waiting_for_title)
 async def process_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text)
-    await message.answer("Great. What is the price? (e.g., ₹400 or $15)")
+    await message.answer("Great. What is the display price text? (e.g., ₹400 or $15)")
     await state.set_state(AddCourseFSM.waiting_for_price)
 
 @dp.message(AddCourseFSM.waiting_for_price)
 async def process_price(message: types.Message, state: FSMContext):
     await state.update_data(price=message.text)
-    await message.answer("Now, type the description text that Bot 2 will send when the user wants to buy this course:")
-    await state.set_state(AddCourseFSM.waiting_for_bot2_text)
+    await message.answer("Now, enter the EXACT NUMERIC price (e.g., 400). This will be used by the bot to mathematically calculate the 25% referral commissions.")
+    await state.set_state(AddCourseFSM.waiting_for_price_numeric)
+
+@dp.message(AddCourseFSM.waiting_for_price_numeric)
+async def process_price_numeric(message: types.Message, state: FSMContext):
+    try:
+        price_num = float(message.text)
+        await state.update_data(price_numeric=price_num)
+        await message.answer("Now, type the description text that Bot 2 will send when the user wants to buy this course:")
+        await state.set_state(AddCourseFSM.waiting_for_bot2_text)
+    except ValueError:
+        await message.answer("Please enter a valid pure number (e.g., 400 or 15).")
 
 @dp.message(AddCourseFSM.waiting_for_bot2_text)
 async def process_bot2_text(message: types.Message, state: FSMContext):
@@ -116,6 +140,7 @@ async def process_delivery_content(message: types.Message, state: FSMContext):
             "course_id": data['course_id'],
             "title": data['title'],
             "price": data['price'],
+            "price_numeric": data['price_numeric'],
             "bot2_text": data['bot2_text'],
             "bot2_image_id": data['bot2_image_id'],
             "delivery_text": delivery_text,
