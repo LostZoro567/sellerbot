@@ -10,9 +10,19 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT2_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+AUTO_DELETE_SECONDS = 900  # 15 minutes = 900 seconds
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# --- HELPER: Background Auto-Delete Task ---
+async def auto_delete_message(chat_id: int, message_id: int, delay: int):
+    """Sleeps for 'delay' seconds, then deletes the message."""
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        print(f"Failed to auto-delete message {message_id}: {e}")
 
 # ==========================================
 # STEP 1: USER ARRIVES & FETCHES COURSE
@@ -22,56 +32,71 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     course_id = command.args
     
     if not course_id:
-        await message.answer("Please start this bot using a valid course link.")
-        return
+        return await message.answer("Please start this bot using a valid course link.")
 
-    # Fetch specific course details from DB
     response = supabase.table("courses").select("*").eq("course_id", course_id).execute()
     
     if response.data:
         course = response.data[0]
         
-        # Log the pending transaction
         supabase.table("transactions").insert({
             "telegram_user_id": message.from_user.id,
             "course_id": course_id,
             "status": "pending_payment"
         }).execute()
 
-        # Create the Buy button
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Buy Now", callback_data=f"buy_{course_id}")]
         ])
 
-        # Send dynamic content using the URL from the database
-        await message.answer_photo(
+        # Save the sent message as a variable so we know its ID
+        sent_msg = await message.answer_photo(
             photo=course['bot2_image_id'],
             caption=f"📘 **{course['title']}**\n\n{course['bot2_text']}\n\n**Price:** {course['price']}",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        
+        # Start the 15-minute destruction timer in the background
+        asyncio.create_task(auto_delete_message(message.chat.id, sent_msg.message_id, AUTO_DELETE_SECONDS))
+
     else:
         await message.answer("Course not found or invalid selection.")
 
 # ==========================================
-# STEP 1.5: USER CLICKS "BUY NOW"
+# STEP 1.5: MULTI-STEP PAYMENT MENU
 # ==========================================
 @dp.callback_query(F.data.startswith("buy_"))
-async def show_payment_options(callback: types.CallbackQuery):
-    # Edit these payment details to match your own
-    payment_menu = (
-        "🏦 **Select a Payment Method**\n\n"
-        "1️⃣ **UPI / Paytm:** `your_upi_id@ybl`\n"
-        "2️⃣ **PayPal:** `paypal.me/YourName`\n"
-        "3️⃣ **Bank Transfer:** `Acc: 123456789 | IFSC: ABCD0123`\n"
-        "4️⃣ **Crypto (USDT TRC20):** `YourWalletAddressHere`\n\n"
-        "📸 *After sending the payment to one of the options above, please upload the screenshot directly into this chat.*"
-    )
+async def show_payment_methods(callback: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔵 PayPal", callback_data="pay_paypal")],
+        [InlineKeyboardButton(text="🟣 Paytm / UPI", callback_data="pay_paytm")],
+        [InlineKeyboardButton(text="🟠 Crypto (USDT)", callback_data="pay_crypto")],
+        [InlineKeyboardButton(text="🏦 Bank Transfer", callback_data="pay_bank")]
+    ])
     
     await callback.message.edit_caption(
-        caption=payment_menu,
+        caption="🏦 **Select your preferred payment method:**",
+        reply_markup=keyboard,
         parse_mode="Markdown"
     )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("pay_"))
+async def show_specific_payment_details(callback: types.CallbackQuery):
+    method = callback.data.split("_")[1]
+    
+    if method == "paypal":
+        text = "🔵 **PayPal Selected**\n\nSend payment to: `paypal.me/YourName`\n\n📸 *Upload your screenshot into this chat after payment.*"
+    elif method == "paytm":
+        text = "🟣 **Paytm / UPI Selected**\n\nSend payment to: `your_upi_id@ybl`\n\n📸 *Upload your screenshot into this chat after payment.*"
+    elif method == "crypto":
+        text = "🟠 **Crypto (USDT TRC20) Selected**\n\nWallet Address: `YourWalletAddressHere`\n\n📸 *Upload your screenshot into this chat after payment.*"
+    elif method == "bank":
+        text = "🏦 **Bank Transfer Selected**\n\nAccount: `123456789`\nIFSC: `ABCD0123`\n\n📸 *Upload your screenshot into this chat after payment.*"
+
+    # NOTE: Because we are EDITING the original message, the 15-minute timer from Step 1 will still successfully delete this payment screen too!
+    await callback.message.edit_caption(caption=text, parse_mode="Markdown")
     await callback.answer()
 
 # ==========================================
@@ -81,22 +106,18 @@ async def show_payment_options(callback: types.CallbackQuery):
 async def handle_payment_screenshot(message: types.Message):
     user_id = message.from_user.id
     
-    # Check for pending transaction
     response = supabase.table("transactions").select("*").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
     
     if not response.data:
-        await message.answer("You don't have any pending payments or you haven't selected a course.")
-        return
+        return await message.answer("You don't have any pending payments. Please select a course first.")
 
     transaction = response.data[-1] 
     trans_id = transaction['id']
     
-    # Update status to awaiting approval
     supabase.table("transactions").update({"status": "awaiting_approval"}).eq("id", trans_id).execute()
 
     await message.answer("Payment screenshot received! Please wait while the admin verifies it.")
 
-    # Forward to Admin
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{trans_id}"),
@@ -112,7 +133,7 @@ async def handle_payment_screenshot(message: types.Message):
     )
 
 # ==========================================
-# STEP 3: ADMIN VERIFIES
+# STEP 3: ADMIN VERIFIES & AUTO-DELETES DELIVERY
 # ==========================================
 @dp.callback_query(F.data.startswith("approve_") | F.data.startswith("reject_"))
 async def admin_decision(callback: types.CallbackQuery):
@@ -121,11 +142,9 @@ async def admin_decision(callback: types.CallbackQuery):
 
     action, trans_id = callback.data.split("_")
     
-    # Fetch transaction details
     response = supabase.table("transactions").select("*").eq("id", trans_id).execute()
     if not response.data:
-        await callback.answer("Transaction not found.")
-        return
+        return await callback.answer("Transaction not found.")
         
     transaction = response.data[0]
     user_id = transaction['telegram_user_id']
@@ -134,8 +153,12 @@ async def admin_decision(callback: types.CallbackQuery):
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
         
-        # You can customize this message to send a specific file or link based on the course_id
-        await bot.send_message(user_id, f"✅ Payment verified! Here is your access link/file for {course_id}.")
+        # Save the delivered course message as a variable
+        course_delivery_msg = await bot.send_message(user_id, f"✅ Payment verified! Here is your access link/file for {course_id}.")
+        
+        # Start the 15-minute destruction timer for the final delivery message
+        asyncio.create_task(auto_delete_message(user_id, course_delivery_msg.message_id, AUTO_DELETE_SECONDS))
+        
         await callback.message.edit_caption(caption=f"{callback.message.caption}\n\n✅ APPROVED")
         
     elif action == "reject":
