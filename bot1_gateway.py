@@ -15,7 +15,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT1_TOKEN")
 SECRET_CODE = os.getenv("SECRET_INVITE_CODE")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-BOT2_USERNAME = "ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username
+BOT2_USERNAME = "ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username (no @)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -27,6 +27,7 @@ class AddCourseFSM(StatesGroup):
     waiting_for_price = State()
     waiting_for_bot2_text = State()
     waiting_for_bot2_image = State()
+    waiting_for_delivery_content = State()
 
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
@@ -47,6 +48,7 @@ async def handle_start(message: types.Message, command: CommandObject):
                 url=f"https://t.me/{BOT2_USERNAME}?start={course['course_id']}"
             ))
             
+        # Change URL to your actual welcome image Telegraph link
         await message.answer_photo(
             photo="https://telegra.ph/file/your_welcome_image.jpg", 
             caption="Welcome to the private portal! Select a course below.",
@@ -86,24 +88,44 @@ async def process_price(message: types.Message, state: FSMContext):
 @dp.message(AddCourseFSM.waiting_for_bot2_text)
 async def process_bot2_text(message: types.Message, state: FSMContext):
     await state.update_data(bot2_text=message.text)
-    await message.answer("Almost done! Finally, paste a **Public Image URL** (like a Telegraph link).\n\nExample: `https://telegra.ph/file/abcd123.jpg`")
+    await message.answer("Almost done! Paste a **Public Image URL** (Telegraph link) for the course display.\n\nExample: `https://telegra.ph/file/abcd123.jpg`")
     await state.set_state(AddCourseFSM.waiting_for_bot2_image)
 
 @dp.message(AddCourseFSM.waiting_for_bot2_image)
 async def process_bot2_image(message: types.Message, state: FSMContext):
     image_url = message.text.strip()
+    await state.update_data(bot2_image_id=image_url)
+    
+    await message.answer("Final Step! 🎁\n\nSend the actual course material the user will receive after buying.\n\nYou can send a **Text Message** (with Google Drive links/passwords) OR upload a **Single File** (like a .zip or .pdf) with a caption.")
+    await state.set_state(AddCourseFSM.waiting_for_delivery_content)
+
+@dp.message(AddCourseFSM.waiting_for_delivery_content)
+async def process_delivery_content(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    
+    delivery_text = message.text or message.caption or "✅ Payment verified! Here is your course material."
+    
+    delivery_file_id = None
+    if message.document:
+        delivery_file_id = message.document.file_id
+    elif message.video:
+        delivery_file_id = message.video.file_id
+        
     try:
         supabase.table("courses").insert({
             "course_id": data['course_id'],
             "title": data['title'],
             "price": data['price'],
             "bot2_text": data['bot2_text'],
-            "bot2_image_id": image_url
+            "bot2_image_id": data['bot2_image_id'],
+            "delivery_text": delivery_text,
+            "delivery_file_id": delivery_file_id
         }).execute()
-        await message.answer(f"✅ Success! Course '{data['title']}' has been added to the database.")
+        
+        await message.answer(f"✅ Success! Course '{data['title']}' has been added to the database and is ready to sell.")
     except Exception as e:
         await message.answer(f"❌ Error saving to database: {e}")
+        
     await state.clear()
 
 # ==========================================
@@ -121,7 +143,6 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
     status_msg = await message.answer("⏳ Broadcast initiating... collecting user data.")
 
-    # Get all unique users from the transactions table
     response = supabase.table("transactions").select("telegram_user_id").execute()
     unique_users = set([row['telegram_user_id'] for row in response.data])
 
