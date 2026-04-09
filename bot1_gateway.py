@@ -15,7 +15,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT1_TOKEN")
 SECRET_CODE = os.getenv("SECRET_INVITE_CODE")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-BOT2_USERNAME = "@ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username
+BOT2_USERNAME = "ExclusiveCollectionVIP_bot" # Replace with your actual Bot 2 username
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
