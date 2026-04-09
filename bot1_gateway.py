@@ -47,12 +47,13 @@ async def handle_start(message: types.Message, command: CommandObject):
                 url=f"https://t.me/{BOT2_USERNAME}?start={course['course_id']}"
             ))
             
-        await message.answer(
-            text="Welcome to the private portal! Select a course below.",
+        await message.answer_photo(
+            photo="https://telegra.ph/file/your_welcome_image.jpg", 
+            caption="Welcome to the private portal! Select a course below.",
             reply_markup=builder.as_markup()
         )
     else:
-        await message.answer("Access Restricted. Please use an official invite link.")
+        await message.answer("Welcome 👋🏻")
 
 # ==========================================
 # ADMIN FLOW: ADD NEW COURSE
