@@ -25,7 +25,7 @@ BUNDLE_DELIVERY_TEXT  = (
 )
 
 # ── CHANGE THIS LINK: This is the main image shown when picking a payment method 
-PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg" # <-- Replace with your real Payment Options Image
+PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg" # <-- Replace with your real Payment Options Image
 
 # ── Interactive Discounts list ────────────────────────────────────────────────
 DISCOUNTS = [
