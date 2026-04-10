@@ -522,19 +522,23 @@ async def use_wallet(callback: types.CallbackQuery):
     discount   = min(wallet, numeric_price)
     amount_due = max(0.0, round(numeric_price - discount, 2))
 
-    # FIX: Update only the specific transaction by its ID, not all pending rows.
+    # ── CORE FIX: Deduct wallet balance IMMEDIATELY for ALL cases ──────────────
+    # Previously, partial-wallet payments (amount_due > 0) never deducted the
+    # balance here — they waited for admin approval. This meant a user could:
+    #   1. Click "Use Wallet" on course A  → balance untouched, discount recorded
+    #   2. Open course B (new pending tx)  → old tx cancelled, wallet_used = 0
+    #   3. Click "Use Wallet" on course B  → same balance, discount applied AGAIN
+    # Fix: deduct immediately regardless of amount_due. If rejected, we refund.
+    # admin_decision must NEVER deduct wallet_used — it is already deducted here.
+    if not _deduct_wallet(user_id, discount):
+        # Balance changed between reading and deducting (race condition)
+        return await callback.answer("⚠️ Wallet balance changed. Please try again.", show_alert=True)
+
+    # Record the discount on the transaction only after successful deduction
     supabase.table("transactions").update({"wallet_used": discount}).eq("id", trans_id).execute()
 
     if amount_due == 0:
-        # FIX: Deduct wallet FIRST (returns False if insufficient), then approve transaction.
-        # Previously wallet was deducted here AND again in admin_decision → double deduction.
-        # Now: full-wallet purchases are self-approved here with deduction only once.
-        # admin_decision will see status="approved" and skip the second deduct.
-        if not _deduct_wallet(user_id, discount):
-            # Race condition: someone else already drained the wallet
-            supabase.table("transactions").update({"wallet_used": 0}).eq("id", trans_id).execute()
-            return await callback.answer("⚠️ Wallet balance changed. Please try again.", show_alert=True)
-
+        # Full wallet payment — self-approve immediately, no screenshot needed
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
         del_text    = course.get("delivery_text", "✅ Here is your course material.")
@@ -576,6 +580,7 @@ async def use_wallet(callback: types.CallbackQuery):
         )
 
     else:
+        # Partial wallet payment — wallet already deducted, user pays the remainder
         back_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")]
         ])
@@ -698,16 +703,9 @@ async def admin_decision(callback: types.CallbackQuery):
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
-        # FIX: Only deduct wallet for PARTIAL wallet payments (amount_due > 0).
-        # Full-wallet purchases (amount_due == 0) are already deducted and approved
-        # in use_wallet handler — deducting here again would double-charge the user.
-        # We detect this by checking if the transaction was already in "approved"
-        # state before we just set it (it wasn't — see guard above), but we still
-        # only deduct if the transaction came from the screenshot path (awaiting_approval),
-        # which means the user paid the remainder manually.
-        if wallet_used > 0:
-            # Partial wallet: deduct the wallet portion now that payment is confirmed
-            _deduct_wallet(user_id, wallet_used)
+        # Wallet was already deducted immediately in use_wallet for ALL cases
+        # (both full and partial payments). Do NOT deduct here — that would
+        # double-charge the user. Refund only happens in the reject branch below.
 
         if course_id == BUNDLE_COURSE_ID:
             numeric_price = float(BUNDLE_PRICE_INR)
