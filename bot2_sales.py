@@ -373,7 +373,7 @@ PAYMENT_METHODS = {
             "⏳ _Window closes in 15 minutes._"
         ),
         # ⚠️ Check this link! If it's dead, the Crypto button will fail.
-        "image": "https://i.ibb.co/T5X40Ys/2a024034c5aa.jpg", 
+        "image": "https://graph.org/file/60cf45bb50cf108f47196-28db3241840c7bc2db.jpg", 
     },
     "others": {
         "text": (
