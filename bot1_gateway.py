@@ -52,7 +52,7 @@ def _ensure_user(user_id: int, username=None):
 
 def _get_wallet(user_id: int) -> float:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
-    return float(row.data) if row.data else 0.0
+    return float(row.data[0]["wallet_balance"]) if row.data else 0.0
 
 
 def _add_wallet(user_id: int, amount: float):
@@ -66,6 +66,7 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
         return False
     supabase.table("users").update({"wallet_balance": round(current - amount, 2)}).eq("telegram_user_id", user_id).execute()
     return True
+    
 # ── Shared helper: full referral program screen ────────────────────────────────
 
 async def _send_referral_info(user_id: int, username, target: types.Message):
