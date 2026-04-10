@@ -459,6 +459,22 @@ async def admin_decision(callback: types.CallbackQuery):
         return await callback.answer("Transaction not found.", show_alert=True)
 
     transaction = res.data[0]
+
+    # ── Guard: already processed — stop here, remove buttons ──────────────────
+    if transaction["status"] in ("approved", "rejected"):
+        await callback.answer("⚠️ Already processed — this payment was already handled.", show_alert=True)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    # ── Remove Approve/Reject buttons immediately so rapid taps can't re-fire ──
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     user_id     = transaction["telegram_user_id"]
     course_id   = transaction["course_id"]
     wallet_used = float(transaction.get("wallet_used", 0))
