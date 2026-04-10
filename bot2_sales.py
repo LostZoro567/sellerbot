@@ -146,16 +146,23 @@ def _pay_referrer(buyer_id: int, numeric_price: float, transaction_id: int):
 
 # ── Keyboard builders ──────────────────────────────────────────────────────────
 
-def _build_course_keyboard(course_id: str, wallet: float) -> InlineKeyboardMarkup:
+def _build_course_keyboard(course_id: str, wallet: float, numeric_price: float = 0) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="💳  Buy Now",   callback_data=f"buy:{course_id}")],
         [InlineKeyboardButton(text="🏷  Discounts", callback_data=f"discounts:{course_id}")],
     ]
     if wallet >= 1:
-        rows.append([InlineKeyboardButton(
-            text=f"💰  Use Wallet  (₹{wallet:.2f} available)",
-            callback_data=f"usewallet:{course_id}"
-        )])
+        if numeric_price > 0 and wallet >= numeric_price:
+            rows.append([InlineKeyboardButton(
+                text=f"💰  Use Wallet  (₹{wallet:.2f} available ✅)",
+                callback_data=f"usewallet:{course_id}"
+            )])
+        else:
+            # Show button but tapping it will show an insufficient balance alert
+            rows.append([InlineKeyboardButton(
+                text=f"💰  Use Wallet  (₹{wallet:.2f} — insufficient ❌)",
+                callback_data=f"usewallet:{course_id}"
+            )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _build_payment_options_keyboard(course_id: str) -> InlineKeyboardMarkup:
@@ -205,6 +212,7 @@ async def handle_course_selection(message: types.Message, command: CommandObject
         "wallet_used":      0
     }).execute()
 
+    numeric_price = float(course.get("numeric_price", 0))
     sent = await message.answer_photo(
         photo=course["bot2_image_id"],
         caption=(
@@ -213,7 +221,7 @@ async def handle_course_selection(message: types.Message, command: CommandObject
             f"💵 *Price:* {course['price']}\n\n"
             f"⏳ _This payment window closes in 15 minutes._"
         ),
-        reply_markup=_build_course_keyboard(course_id, wallet),
+        reply_markup=_build_course_keyboard(course_id, wallet, numeric_price),
         parse_mode="Markdown"
     )
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id, AUTO_DELETE_SECS))
@@ -258,6 +266,7 @@ async def back_to_course(callback: types.CallbackQuery):
 
     course = res.data[0]
     wallet = _get_wallet(callback.from_user.id)
+    numeric_price = float(course.get("numeric_price", 0))
 
     try:
         await callback.message.edit_media(
@@ -271,7 +280,7 @@ async def back_to_course(callback: types.CallbackQuery):
                 ),
                 parse_mode="Markdown"
             ),
-            reply_markup=_build_course_keyboard(course_id, wallet)
+            reply_markup=_build_course_keyboard(course_id, wallet, numeric_price)
         )
     except Exception:
         await _safe_delete(callback.message.chat.id, callback.message.message_id)
@@ -538,82 +547,55 @@ async def use_wallet(callback: types.CallbackQuery):
     discount   = min(wallet, numeric_price)
     amount_due = max(0.0, round(numeric_price - discount, 2))
 
-    if amount_due > 0:
-        # ── PARTIAL wallet payment ────────────────────────────────────────────
-        # Wallet doesn't cover the full price. Record the discount on the
-        # transaction so admin_decision can deduct it on approval.
-        # Do NOT touch wallet_balance here — it is deducted only after admin
-        # confirms the remainder was paid (in admin_decision → approve).
-        supabase.table("transactions").update({"wallet_used": discount}).eq("id", trans_id).execute()
-
-        back_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")]
-        ])
-        sent = await bot.send_photo(
-            chat_id=user_id,
-            photo=PAYMENT_OPTIONS_IMAGE,
-            caption=(
-                "💰 *Wallet Discount Available!*\n\n"
-                f"┌ 🎫 Wallet credit to apply:  *₹{discount:.2f}*\n"
-                f"└ 💵 You still need to pay:   *₹{amount_due:.2f}*\n\n"
-                f"Pay *₹{amount_due:.2f}* using any payment method and send your screenshot.\n"
-                "Your wallet credit will be applied automatically on approval.\n\n"
-                "⏳ _This window closes in 15 minutes._"
-            ),
-            reply_markup=back_kb,
-            parse_mode="Markdown"
+    # ── Block if wallet balance is less than course price ──────────────────────
+    if wallet < numeric_price:
+        return await callback.answer(
+            f"❌ Insufficient wallet balance!\n\n"
+            f"Your balance: ₹{wallet:.2f}\n"
+            f"Course price: ₹{numeric_price:.2f}\n\n"
+            f"You need ₹{round(numeric_price - wallet, 2):.2f} more to use wallet for this course.",
+            show_alert=True
         )
-        asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
 
-    else:
-        # ── FULL wallet payment ───────────────────────────────────────────────
-        # Wallet covers 100% of the price. Deduct immediately and self-approve.
-        # No screenshot or admin step needed.
-        if not _deduct_wallet(user_id, discount):
-            # Balance changed between reading and deducting (concurrent request)
-            return await callback.answer("⚠️ Wallet balance changed. Please try again.", show_alert=True)
+    # ── Wallet covers full price — record and send for admin approval ──────────
+    # Even full-wallet purchases require admin to verify and approve.
+    # Wallet is NOT deducted here — it is deducted only when admin approves.
+    supabase.table("transactions").update({"wallet_used": discount}).eq("id", trans_id).execute()
 
-        supabase.table("transactions").update(
-            {"wallet_used": discount, "status": "approved"}
-        ).eq("id", trans_id).execute()
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")]
+    ])
+    await callback.message.edit_caption(
+        caption=(
+            "💰 *Wallet Payment — Pending Admin Approval*\n\n"
+            f"┌ 🎫 Wallet amount to deduct:  *₹{discount:.2f}*\n"
+            f"└ 💵 Remaining to pay:          *₹0.00*\n\n"
+            "Your wallet balance will be deducted once the admin approves.\n"
+            "You\'ll receive a notification when it\'s confirmed. 🔔"
+        ),
+        reply_markup=back_kb,
+        parse_mode="Markdown"
+    )
 
-        del_text    = course.get("delivery_text", "✅ Here is your course material.")
-        del_file_id = course.get("delivery_file_id")
-
-        if del_file_id:
-            sent = await bot.send_document(
-                chat_id=user_id, document=del_file_id,
-                caption=f"{del_text}\n\n⏳ _This message self-destructs in 15 minutes._",
-                parse_mode="Markdown"
-            )
-        else:
-            sent = await bot.send_message(
-                chat_id=user_id,
-                text=f"{del_text}\n\n⏳ _This message self-destructs in 15 minutes._",
-                parse_mode="Markdown", disable_web_page_preview=True
-            )
-        asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
-
-        referrer_id, credit = _pay_referrer(user_id, numeric_price, trans_id)
-        if referrer_id:
-            try:
-                await bot.send_message(
-                    referrer_id,
-                    f"💸 *₹{credit:.2f} added to your wallet!*\n\n"
-                    f"One of your referrals just purchased *{course['title']}*.",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-
-        await callback.message.edit_caption(
-            caption=(
-                "✅ *Payment Complete — Fully Paid with Wallet!*\n\n"
-                "Your course has been delivered above. 🎓\n"
-                "Enjoy the course!"
-            ),
-            parse_mode="Markdown"
-        )
+    # Notify admin for approval
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅  Approve", callback_data=f"approve_{trans_id}"),
+            InlineKeyboardButton(text="❌  Reject",  callback_data=f"reject_{trans_id}")
+        ]
+    ])
+    await bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            f"💰 *Wallet Purchase Request*\n\n"
+            f"👤 User ID: `{user_id}`\n"
+            f"📘 Course: `{course_id}`\n"
+            f"💸 Wallet amount: *₹{discount:.2f}*\n\n"
+            "_No screenshot — user is paying fully from wallet balance._"
+        ),
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
 
     await callback.answer()
 
@@ -718,14 +700,14 @@ async def admin_decision(callback: types.CallbackQuery):
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
-        # Wallet deduction logic:
-        # - Full wallet purchase (amount_due was 0): already deducted in use_wallet,
-        #   transaction was already set to "approved" there — this branch is never
-        #   reached for those (they never go through the screenshot flow).
-        # - Partial wallet purchase (amount_due > 0): wallet_used was recorded but
-        #   NOT yet deducted. Deduct now that admin confirms the remainder was paid.
+        # Wallet deduction: wallet_used is NEVER deducted in use_wallet anymore.
+        # All wallet deductions happen here on admin approval — whether the user
+        # paid fully from wallet or partially. This is the single deduction point.
         if wallet_used > 0:
-            _deduct_wallet(user_id, wallet_used)
+            if not _deduct_wallet(user_id, wallet_used):
+                # Balance may have changed (edge case). Notify admin and still deliver.
+                print(f"[WARN] admin_decision: wallet deduct failed for user {user_id}, "
+                      f"amount {wallet_used}. Delivering course anyway.")
 
         if course_id == BUNDLE_COURSE_ID:
             numeric_price = float(BUNDLE_PRICE_INR)
