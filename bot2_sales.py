@@ -64,14 +64,14 @@ async def _safe_delete(chat_id: int, message_id: int):
 
 def _get_wallet(user_id: int) -> float:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
-    return float(row.data) if row.data else 0.0
+    return float(row.data[0]["wallet_balance"]) if row.data else 0.0
 
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if not row.data:
         return False
-    current = float(row.data)
+    current = float(row.data[0]["wallet_balance"])
     if current < amount:
         return False
     supabase.table("users").update({"wallet_balance": round(current - amount, 2)}).eq("telegram_user_id", user_id).execute()
@@ -80,7 +80,7 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
 
 def _add_wallet(user_id: int, amount: float):
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
-    current = float(row.data) if row.data else 0.0
+    current = float(row.data[0]["wallet_balance"]) if row.data else 0.0
     supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
 
 
@@ -88,14 +88,15 @@ def _pay_referrer(buyer_id: int, numeric_price: float):
     ref_row = supabase.table("referrals").select("*").eq("referred_user_id", buyer_id).execute()
     if not ref_row.data:
         return None, 0
-    ref = ref_row.data
-    if ref == "purchased":
+    ref = ref_row.data[0]
+    if ref["status"] == "purchased":
         return None, 0
-    referrer_id = ref
+    referrer_id = ref["referrer_id"]
     credit = round(numeric_price * REFERRAL_PERCENT / 100, 2)
     _add_wallet(referrer_id, credit)
-    supabase.table("referrals").update({"status": "purchased"}).eq("id", ref).execute()
+    supabase.table("referrals").update({"status": "purchased"}).eq("id", ref["id"]).execute()
     return referrer_id, credit
+    
 # ── Keyboard builders ──────────────────────────────────────────────────────────
 
 def _build_course_keyboard(course_id: str, wallet: float) -> InlineKeyboardMarkup:
