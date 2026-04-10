@@ -80,20 +80,36 @@ def _add_wallet(user_id: int, amount: float):
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
     """
-    FIX: Removed the 0.02 tolerance exploit. Now uses strict >= check.
-    Returns True and deducts only if user genuinely has enough balance.
+    Deducts `amount` from the user's wallet.
+    Returns True only if balance was sufficient AND the DB write is confirmed.
+
+    Supabase .update() never raises on RLS/permission failures — it silently
+    returns empty data. So we re-read after writing to confirm the value changed.
+    This catches silent write failures that previously left the balance untouched
+    even though the code believed it had deducted successfully.
     """
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if not row.data:
         return False
     current = float(row.data[0]["wallet_balance"])
 
-    # FIX: strict check — no tolerance that could allow negative balance
     if current < amount:
         return False
 
     new_balance = max(0.0, round(current - amount, 2))
     supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
+
+    # Confirm the write actually landed — re-read and verify
+    verify = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
+    if not verify.data:
+        return False
+    confirmed = float(verify.data[0]["wallet_balance"])
+    if abs(confirmed - new_balance) > 0.001:
+        # Write did not apply (RLS policy, concurrent write, network glitch)
+        print(f"[WARN] _deduct_wallet: write failed for user {user_id}. "
+              f"Expected {new_balance}, got {confirmed}")
+        return False
+
     return True
 
 def _pay_referrer(buyer_id: int, numeric_price: float, transaction_id: int):
@@ -522,24 +538,44 @@ async def use_wallet(callback: types.CallbackQuery):
     discount   = min(wallet, numeric_price)
     amount_due = max(0.0, round(numeric_price - discount, 2))
 
-    # ── CORE FIX: Deduct wallet balance IMMEDIATELY for ALL cases ──────────────
-    # Previously, partial-wallet payments (amount_due > 0) never deducted the
-    # balance here — they waited for admin approval. This meant a user could:
-    #   1. Click "Use Wallet" on course A  → balance untouched, discount recorded
-    #   2. Open course B (new pending tx)  → old tx cancelled, wallet_used = 0
-    #   3. Click "Use Wallet" on course B  → same balance, discount applied AGAIN
-    # Fix: deduct immediately regardless of amount_due. If rejected, we refund.
-    # admin_decision must NEVER deduct wallet_used — it is already deducted here.
-    if not _deduct_wallet(user_id, discount):
-        # Balance changed between reading and deducting (race condition)
-        return await callback.answer("⚠️ Wallet balance changed. Please try again.", show_alert=True)
+    if amount_due > 0:
+        # ── PARTIAL wallet payment ────────────────────────────────────────────
+        # Wallet doesn't cover the full price. Record the discount on the
+        # transaction so admin_decision can deduct it on approval.
+        # Do NOT touch wallet_balance here — it is deducted only after admin
+        # confirms the remainder was paid (in admin_decision → approve).
+        supabase.table("transactions").update({"wallet_used": discount}).eq("id", trans_id).execute()
 
-    # Record the discount on the transaction only after successful deduction
-    supabase.table("transactions").update({"wallet_used": discount}).eq("id", trans_id).execute()
+        back_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")]
+        ])
+        sent = await bot.send_photo(
+            chat_id=user_id,
+            photo=PAYMENT_OPTIONS_IMAGE,
+            caption=(
+                "💰 *Wallet Discount Available!*\n\n"
+                f"┌ 🎫 Wallet credit to apply:  *₹{discount:.2f}*\n"
+                f"└ 💵 You still need to pay:   *₹{amount_due:.2f}*\n\n"
+                f"Pay *₹{amount_due:.2f}* using any payment method and send your screenshot.\n"
+                "Your wallet credit will be applied automatically on approval.\n\n"
+                "⏳ _This window closes in 15 minutes._"
+            ),
+            reply_markup=back_kb,
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
 
-    if amount_due == 0:
-        # Full wallet payment — self-approve immediately, no screenshot needed
-        supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
+    else:
+        # ── FULL wallet payment ───────────────────────────────────────────────
+        # Wallet covers 100% of the price. Deduct immediately and self-approve.
+        # No screenshot or admin step needed.
+        if not _deduct_wallet(user_id, discount):
+            # Balance changed between reading and deducting (concurrent request)
+            return await callback.answer("⚠️ Wallet balance changed. Please try again.", show_alert=True)
+
+        supabase.table("transactions").update(
+            {"wallet_used": discount, "status": "approved"}
+        ).eq("id", trans_id).execute()
 
         del_text    = course.get("delivery_text", "✅ Here is your course material.")
         del_file_id = course.get("delivery_file_id")
@@ -578,27 +614,6 @@ async def use_wallet(callback: types.CallbackQuery):
             ),
             parse_mode="Markdown"
         )
-
-    else:
-        # Partial wallet payment — wallet already deducted, user pays the remainder
-        back_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")]
-        ])
-        sent = await bot.send_photo(
-            chat_id=user_id,
-            photo=PAYMENT_OPTIONS_IMAGE,
-            caption=(
-                "💰 *Wallet Discount Applied!*\n\n"
-                f"┌ 🎫 Wallet credit used:   *₹{discount:.2f}*\n"
-                f"└ 💵 Remaining to pay:     *₹{amount_due:.2f}*\n\n"
-                f"Please pay the remaining *₹{amount_due:.2f}* using any payment method "
-                "and send your screenshot here.\n\n"
-                "⏳ _This window closes in 15 minutes._"
-            ),
-            reply_markup=back_kb,
-            parse_mode="Markdown"
-        )
-        asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
 
     await callback.answer()
 
@@ -703,9 +718,14 @@ async def admin_decision(callback: types.CallbackQuery):
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
-        # Wallet was already deducted immediately in use_wallet for ALL cases
-        # (both full and partial payments). Do NOT deduct here — that would
-        # double-charge the user. Refund only happens in the reject branch below.
+        # Wallet deduction logic:
+        # - Full wallet purchase (amount_due was 0): already deducted in use_wallet,
+        #   transaction was already set to "approved" there — this branch is never
+        #   reached for those (they never go through the screenshot flow).
+        # - Partial wallet purchase (amount_due > 0): wallet_used was recorded but
+        #   NOT yet deducted. Deduct now that admin confirms the remainder was paid.
+        if wallet_used > 0:
+            _deduct_wallet(user_id, wallet_used)
 
         if course_id == BUNDLE_COURSE_ID:
             numeric_price = float(BUNDLE_PRICE_INR)
