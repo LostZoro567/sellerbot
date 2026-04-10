@@ -25,7 +25,7 @@ BUNDLE_DELIVERY_TEXT  = (
 )
 
 # ── CHANGE THIS LINK: This is the main image shown when picking a payment method 
-PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg" # <-- Replace with your real Payment Options Image
+PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg" # <-- Replace with your real Payment Options Image
 
 # ── Interactive Discounts list ────────────────────────────────────────────────
 DISCOUNTS = [
@@ -65,20 +65,32 @@ def _get_wallet(user_id: int) -> float:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     return float(row.data[0]["wallet_balance"]) if row.data else 0.0
 
+def _add_wallet(user_id: int, amount: float):
+    row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
+    if row.data:
+        current = float(row.data[0]["wallet_balance"])
+        supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
+    else:
+        # Fallback insert so referrers always get paid
+        supabase.table("users").insert({
+            "telegram_user_id": user_id,
+            "username": "",
+            "wallet_balance": round(amount, 2)
+        }).execute()
+
 def _deduct_wallet(user_id: int, amount: float) -> bool:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if not row.data:
         return False
     current = float(row.data[0]["wallet_balance"])
-    if current < amount:
+    
+    # Tolerates up to 0.02 floating point variance safely
+    if current < (amount - 0.02):
         return False
-    supabase.table("users").update({"wallet_balance": round(current - amount, 2)}).eq("telegram_user_id", user_id).execute()
+        
+    new_balance = max(0.0, round(current - amount, 2))
+    supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
     return True
-
-def _add_wallet(user_id: int, amount: float):
-    row     = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
-    current = float(row.data[0]["wallet_balance"]) if row.data else 0.0
-    supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
 
 def _pay_referrer(buyer_id: int, numeric_price: float):
     ref_row = supabase.table("referrals").select("*").eq("referred_user_id", buyer_id).execute()
@@ -219,6 +231,19 @@ async def back_to_course(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("buy:"))
 async def show_payment_methods(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
+    
+    # Fixes direct cart purchase: Ensures a pending transaction is ready for screenshots
+    res_tx = supabase.table("transactions").select("id").eq("telegram_user_id", callback.from_user.id).eq("status", "pending_payment").execute()
+    if res_tx.data:
+        supabase.table("transactions").update({"course_id": course_id}).eq("id", res_tx.data[-1]["id"]).execute()
+    else:
+        supabase.table("transactions").insert({
+            "telegram_user_id": callback.from_user.id,
+            "course_id":        course_id,
+            "status":           "pending_payment",
+            "wallet_used":      0
+        }).execute()
+
     res = supabase.table("courses").select("price").eq("course_id", course_id).execute()
     price_display = res.data[0]["price"] if res.data else "?"
 
@@ -314,12 +339,16 @@ async def bundle_yes(callback: types.CallbackQuery):
     course_id = parts[2]
     user_id   = callback.from_user.id
 
-    supabase.table("transactions").insert({
-        "telegram_user_id": user_id,
-        "course_id":        BUNDLE_COURSE_ID,
-        "status":           "pending_payment",
-        "wallet_used":      0
-    }).execute()
+    res_tx = supabase.table("transactions").select("id").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
+    if res_tx.data:
+        supabase.table("transactions").update({"course_id": BUNDLE_COURSE_ID}).eq("id", res_tx.data[-1]["id"]).execute()
+    else:
+        supabase.table("transactions").insert({
+            "telegram_user_id": user_id,
+            "course_id":        BUNDLE_COURSE_ID,
+            "status":           "pending_payment",
+            "wallet_used":      0
+        }).execute()
 
     await _show_payment_detail(callback, method, BUNDLE_COURSE_ID)
 
@@ -373,7 +402,7 @@ PAYMENT_METHODS = {
             "⏳ _Window closes in 15 minutes._"
         ),
         # ⚠️ Check this link! If it's dead, the Crypto button will fail.
-        "image": "https://graph.org/file/60cf45bb50cf108f47196-28db3241840c7bc2db.jpg", 
+        "image": "https://i.ibb.co/T5X40Ys/2a024034c5aa.jpg", 
     },
     "others": {
         "text": (
@@ -383,7 +412,7 @@ PAYMENT_METHODS = {
         ),
         "image": "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg",
         "extra_buttons": [
-            [InlineKeyboardButton(text="👤 Message Admin", url="https://t.me/ProSeller_69")]
+            [InlineKeyboardButton(text="👤 Message Admin", url="https://t.me/YourRealUsername")]
         ],
     },
 }
@@ -413,7 +442,6 @@ async def _show_payment_detail(callback: types.CallbackQuery, method: str, cours
         )
     except Exception as e:
         await callback.answer(f"⚠️ The image link for {method.upper()} is broken. Please update it in the code.", show_alert=True)
-        print(f"Image Error: {e}")
         
     await callback.answer()
 
@@ -524,7 +552,8 @@ async def handle_screenshot(message: types.Message):
 
     transaction = res.data[-1]
     trans_id    = transaction["id"]
-    wallet_used = float(transaction.get("wallet_used", 0))
+    # Handled safely if explicitly set to null in DB
+    wallet_used = float(transaction.get("wallet_used") or 0.0)
 
     supabase.table("transactions").update({"status": "awaiting_approval"}).eq("id", trans_id).execute()
 
@@ -590,9 +619,9 @@ async def admin_decision(callback: types.CallbackQuery):
 
     user_id     = transaction["telegram_user_id"]
     course_id   = transaction["course_id"]
-    wallet_used = float(transaction.get("wallet_used", 0))
+    wallet_used = float(transaction.get("wallet_used") or 0.0)
 
-    # Rebuild the original caption safely with code blocks to prevent Markdown errors
+    # Rebuild caption safely avoiding markdown crashes
     wallet_note = f"\n💰 *Wallet credit used:* ₹{wallet_used:.2f}" if wallet_used > 0 else ""
     safe_caption = (
         f"💳 *New Payment Screenshot*\n\n"
@@ -667,6 +696,7 @@ async def admin_decision(callback: types.CallbackQuery):
         )
 
     await callback.answer()
+
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
