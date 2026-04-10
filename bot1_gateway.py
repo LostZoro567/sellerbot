@@ -12,11 +12,10 @@ from db import supabase
 
 load_dotenv()
 
-BOT_TOKEN     = os.getenv("BOT1_TOKEN")
-SECRET_CODE   = os.getenv("SECRET_INVITE_CODE")
-ADMIN_ID      = int(os.getenv("ADMIN_ID"))
-BOT2_USERNAME = os.getenv("BOT2_USERNAME", "ExclusiveCollectionVIP_bot")
-
+BOT_TOKEN        = os.getenv("BOT1_TOKEN")
+SECRET_CODE      = os.getenv("SECRET_INVITE_CODE")
+ADMIN_ID         = int(os.getenv("ADMIN_ID"))
+BOT2_USERNAME    = os.getenv("BOT2_USERNAME", "ExclusiveCollectionVIP_bot")
 REFERRAL_PERCENT = 25
 WELCOME_PHOTO    = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg"
 
@@ -41,7 +40,7 @@ class BroadcastFSM(StatesGroup):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _ensure_user(user_id: int, username: str | None = None):
+def _ensure_user(user_id: int, username=None):
     existing = supabase.table("users").select("telegram_user_id").eq("telegram_user_id", user_id).execute()
     if not existing.data:
         supabase.table("users").insert({
@@ -69,19 +68,57 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
     return True
 
 
+# ── Shared helper: full referral program screen ────────────────────────────────
+
+async def _send_referral_info(user_id: int, username, target: types.Message):
+    _ensure_user(user_id, username)
+
+    balance   = _get_wallet(user_id)
+    ref_count = len(supabase.table("referrals").select("id").eq("referrer_id", user_id).execute().data)
+    paid_refs = len(supabase.table("referrals").select("id").eq("referrer_id", user_id).eq("status", "purchased").execute().data)
+
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start={SECRET_CODE}-ref-{user_id}"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="\U0001f517  Copy My Referral Link", callback_data="get_referral_link"))
+
+    await target.answer(
+        "\U0001f381 *Referral Program*\n\n"
+        f"\u250c \U0001f4b0 Wallet Balance:         *\u20b9{balance:.2f}*\n"
+        f"\u251c \U0001f465 Friends Referred:        *{ref_count}*\n"
+        f"\u2514 \U0001f6cd Friends Who Purchased:   *{paid_refs}*\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        "\U0001f4a1 *How it works:*\n"
+        "1\ufe0f\u20e3  Share your referral link with friends\n"
+        "2\ufe0f\u20e3  They join the private portal through your link\n"
+        f"3\ufe0f\u20e3  When they buy a course, you earn *{REFERRAL_PERCENT}%* of the price as wallet credits\n"
+        "4\ufe0f\u20e3  Use those credits as a discount on your own purchases!\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "\U0001f517 *Your Referral Link:*\n"
+        f"`{ref_link}`\n\n"
+        "_Tap the link above to copy it, then share it anywhere!_",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+
+
 # ── /start ─────────────────────────────────────────────────────────────────────
 #
-#  Referral deep-link format:  ?start=<SECRET_CODE>-ref-<USER_ID>
-#
-#  IMPORTANT: Telegram only allows A-Z, a-z, 0-9, _ and - in ?start= parameters.
-#  The old format used ":" which is silently stripped/broken by Telegram.
-#  We now use "-ref-" as the separator which is fully safe.
+#  Supported ?start= args:
+#    SECRET_CODE                 — normal entry
+#    SECRET_CODE-ref-USERID      — referral entry
+#    refer                       — deep link from Bot 2 Refer & Pay button
 
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, command: CommandObject):
     user_id  = message.from_user.id
     username = message.from_user.username
     args     = command.args or ""
+
+    # Deep link from Bot 2 Refer & Pay button
+    if args == "refer":
+        return await _send_referral_info(user_id, username, message)
 
     # Parse  SECRET_CODE-ref-USERID  or just  SECRET_CODE
     referrer_id = None
@@ -96,7 +133,7 @@ async def handle_start(message: types.Message, command: CommandObject):
 
     if code != SECRET_CODE:
         return await message.answer(
-            "👋 *Welcome!*\n\n"
+            "\U0001f44b *Welcome!*\n\n"
             "You need a valid invite link to access the private catalog.\n\n"
             "_Ask a friend who's already inside to share their referral link with you._",
             parse_mode="Markdown"
@@ -117,29 +154,28 @@ async def handle_start(message: types.Message, command: CommandObject):
             try:
                 await bot.send_message(
                     referrer_id,
-                    "🎉 *Someone just joined using your referral link!*\n\n"
-                    f"You'll earn *{REFERRAL_PERCENT}%* wallet credit the moment they make a purchase. 💸",
+                    "\U0001f389 *Someone just joined using your referral link!*\n\n"
+                    f"You'll earn *{REFERRAL_PERCENT}%* wallet credit the moment they make a purchase. \U0001f4b8",
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
 
-    # Build course menu
     courses = supabase.table("courses").select("course_id, title").execute().data
     builder = InlineKeyboardBuilder()
     for c in courses:
         builder.row(InlineKeyboardButton(
-            text=f"📘 {c['title']}",
+            text=f"\U0001f4d8 {c['title']}",
             url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
         ))
 
     wallet      = _get_wallet(user_id)
-    wallet_note = f"\n\n💰 *Wallet Balance:* ₹{wallet:.2f}" if wallet > 0 else ""
+    wallet_note = f"\n\n\U0001f4b0 *Wallet Balance:* \u20b9{wallet:.2f}" if wallet > 0 else ""
 
     await message.answer_photo(
         photo=WELCOME_PHOTO,
         caption=(
-            f"🎓 *Welcome to the Private Portal!*\n\n"
+            "\U0001f393 *Welcome to the Private Portal!*\n\n"
             f"Browse the courses below and tap one to view details & purchase.{wallet_note}"
         ),
         reply_markup=builder.as_markup(),
@@ -159,34 +195,43 @@ async def cmd_wallet(message: types.Message):
     paid_refs = len(supabase.table("referrals").select("id").eq("referrer_id", user_id).eq("status", "purchased").execute().data)
 
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔗 Get My Referral Link", callback_data="get_referral_link"))
+    builder.row(InlineKeyboardButton(text="\U0001f517 Get My Referral Link", callback_data="get_referral_link"))
 
     await message.answer(
-        f"💼 *Your Wallet*\n\n"
-        f"┌ 💰 Balance:                *₹{balance:.2f}*\n"
-        f"├ 👥 Total Referrals:        *{ref_count}*\n"
-        f"└ 🛍 Referrals Purchased:    *{paid_refs}*\n\n"
-        f"📌 *How it works:*\n"
-        f"Share your referral link → a friend joins → they buy a course → you instantly earn *{REFERRAL_PERCENT}%* of their purchase as wallet credits!\n\n"
-        f"_Your wallet balance can be used as a discount on your next purchase._",
+        "\U0001f4bc *Your Wallet*\n\n"
+        f"\u250c \U0001f4b0 Balance:                *\u20b9{balance:.2f}*\n"
+        f"\u251c \U0001f465 Total Referrals:        *{ref_count}*\n"
+        f"\u2514 \U0001f6cd Referrals Purchased:    *{paid_refs}*\n\n"
+        f"\U0001f4cc *How it works:*\n"
+        f"Share your referral link \u2192 a friend joins \u2192 they buy a course \u2192 you instantly earn *{REFERRAL_PERCENT}%* of their purchase as wallet credits!\n\n"
+        "_Your wallet balance can be used as a discount on your next purchase._\n\n"
+        "_For the full referral program, use /refer_",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
 
 
+# ── /refer ─────────────────────────────────────────────────────────────────────
+
+@dp.message(Command("refer"))
+async def cmd_refer(message: types.Message):
+    await _send_referral_info(message.from_user.id, message.from_user.username, message)
+
+
+# ── Referral link callback ──────────────────────────────────────────────────────
+
 @dp.callback_query(F.data == "get_referral_link")
 async def send_referral_link(callback: types.CallbackQuery):
     user_id  = callback.from_user.id
     bot_info = await bot.get_me()
-    # Format: SECRET_CODE-ref-USER_ID  (safe chars only — no colons)
     ref_link = f"https://t.me/{bot_info.username}?start={SECRET_CODE}-ref-{user_id}"
 
     await callback.message.answer(
-        f"🔗 *Your Personal Referral Link*\n\n"
+        "\U0001f517 *Your Personal Referral Link*\n\n"
         f"`{ref_link}`\n\n"
-        f"📤 Share this with friends!\n"
-        f"When they buy a course, you instantly earn *{REFERRAL_PERCENT}%* of their purchase straight into your wallet. 💸\n\n"
-        f"_Tap the link above to copy it._",
+        "\U0001f4e4 Share this with friends!\n"
+        f"When they buy a course, you instantly earn *{REFERRAL_PERCENT}%* of their purchase straight into your wallet. \U0001f4b8\n\n"
+        "_Tap the link above to copy it._",
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -199,7 +244,7 @@ async def cmd_addnew(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer(
-        "🛠 *Add New Course — Step 1 of 6*\n\n"
+        "\U0001f6e0 *Add New Course \u2014 Step 1 of 6*\n\n"
         "Enter a unique *internal ID* for this course.\n"
         "_(Use lowercase letters/numbers only, e.g. `python_basics`, `course_7`)_",
         parse_mode="Markdown"
@@ -210,8 +255,8 @@ async def cmd_addnew(message: types.Message, state: FSMContext):
 async def process_course_id(message: types.Message, state: FSMContext):
     await state.update_data(course_id=message.text.strip().lower().replace(" ", "_"))
     await message.answer(
-        "✅ ID saved!\n\n"
-        "🛠 *Step 2 of 6 — Display Title*\n\n"
+        "\u2705 ID saved!\n\n"
+        "\U0001f6e0 *Step 2 of 6 \u2014 Display Title*\n\n"
         "Enter the title users will see.\n_(e.g. `Master Python 2024`)_",
         parse_mode="Markdown"
     )
@@ -221,9 +266,9 @@ async def process_course_id(message: types.Message, state: FSMContext):
 async def process_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text.strip())
     await message.answer(
-        "✅ Title saved!\n\n"
-        "🛠 *Step 3 of 6 — Display Price*\n\n"
-        "Enter the price shown to users.\n_(e.g. `₹400` or `$15`)_",
+        "\u2705 Title saved!\n\n"
+        "\U0001f6e0 *Step 3 of 6 \u2014 Display Price*\n\n"
+        "Enter the price shown to users.\n_(e.g. `\u20b9400` or `$15`)_",
         parse_mode="Markdown"
     )
     await state.set_state(AddCourseFSM.waiting_for_price)
@@ -232,9 +277,9 @@ async def process_title(message: types.Message, state: FSMContext):
 async def process_price(message: types.Message, state: FSMContext):
     await state.update_data(price=message.text.strip())
     await message.answer(
-        "✅ Price saved!\n\n"
-        "🛠 *Step 4 of 6 — Numeric Price*\n\n"
-        "Enter the price as a plain number in ₹ — this is used for referral calculations.\n_(e.g. `400`)_",
+        "\u2705 Price saved!\n\n"
+        "\U0001f6e0 *Step 4 of 6 \u2014 Numeric Price*\n\n"
+        "Enter the price as a plain number in \u20b9 \u2014 used for referral calculations.\n_(e.g. `400`)_",
         parse_mode="Markdown"
     )
     await state.set_state(AddCourseFSM.waiting_for_numeric_price)
@@ -242,13 +287,16 @@ async def process_price(message: types.Message, state: FSMContext):
 @dp.message(AddCourseFSM.waiting_for_numeric_price)
 async def process_numeric_price(message: types.Message, state: FSMContext):
     try:
-        numeric = float(message.text.strip().replace("₹", "").replace("$", ""))
+        numeric = float(message.text.strip().replace("\u20b9", "").replace("$", ""))
     except ValueError:
-        return await message.answer("❌ That doesn't look like a number. Please enter something like `400`.", parse_mode="Markdown")
+        return await message.answer(
+            "\u274c That doesn't look like a number. Please enter something like `400`.",
+            parse_mode="Markdown"
+        )
     await state.update_data(numeric_price=numeric)
     await message.answer(
-        "✅ Numeric price saved!\n\n"
-        "🛠 *Step 5 of 6 — Sales Description*\n\n"
+        "\u2705 Numeric price saved!\n\n"
+        "\U0001f6e0 *Step 5 of 6 \u2014 Sales Description*\n\n"
         "Enter the sales text Bot 2 will show buyers when they view this course:",
         parse_mode="Markdown"
     )
@@ -258,8 +306,8 @@ async def process_numeric_price(message: types.Message, state: FSMContext):
 async def process_bot2_text(message: types.Message, state: FSMContext):
     await state.update_data(bot2_text=message.text.strip())
     await message.answer(
-        "✅ Description saved!\n\n"
-        "🛠 *Step 6a of 6 — Course Thumbnail URL*\n\n"
+        "\u2705 Description saved!\n\n"
+        "\U0001f6e0 *Step 6a of 6 \u2014 Course Thumbnail URL*\n\n"
         "Paste a public image URL for the course thumbnail.\n"
         "_(e.g. `https://telegra.ph/file/abc.jpg`)_",
         parse_mode="Markdown"
@@ -270,11 +318,11 @@ async def process_bot2_text(message: types.Message, state: FSMContext):
 async def process_bot2_image(message: types.Message, state: FSMContext):
     await state.update_data(bot2_image_id=message.text.strip())
     await message.answer(
-        "✅ Thumbnail saved!\n\n"
-        "🛠 *Step 6b of 6 — Course Delivery Content*\n\n"
+        "\u2705 Thumbnail saved!\n\n"
+        "\U0001f6e0 *Step 6b of 6 \u2014 Course Delivery Content*\n\n"
         "Send what the buyer receives after payment:\n\n"
-        "• A *text message* (e.g. Google Drive links, passwords, notes)\n"
-        "• Or a *file* (`.zip`, `.pdf`) with an optional caption",
+        "\u2022 A *text message* (e.g. Google Drive links, passwords, notes)\n"
+        "\u2022 Or a *file* (`.zip`, `.pdf`) with an optional caption",
         parse_mode="Markdown"
     )
     await state.set_state(AddCourseFSM.waiting_for_delivery_content)
@@ -283,7 +331,7 @@ async def process_bot2_image(message: types.Message, state: FSMContext):
 async def process_delivery_content(message: types.Message, state: FSMContext):
     data = await state.get_data()
 
-    delivery_text    = message.text or message.caption or "✅ Payment verified! Here is your course material."
+    delivery_text    = message.text or message.caption or "\u2705 Payment verified! Here is your course material."
     delivery_file_id = None
 
     if message.document:
@@ -303,12 +351,12 @@ async def process_delivery_content(message: types.Message, state: FSMContext):
             "delivery_file_id": delivery_file_id,
         }).execute()
         await message.answer(
-            f"🎉 *Course Added Successfully!*\n\n"
-            f"📘 *{data['title']}* is now live and ready to sell.",
+            "\U0001f389 *Course Added Successfully!*\n\n"
+            f"\U0001f4d8 *{data['title']}* is now live and ready to sell.",
             parse_mode="Markdown"
         )
     except Exception as e:
-        await message.answer(f"❌ *Database error:*\n\n`{e}`", parse_mode="Markdown")
+        await message.answer(f"\u274c *Database error:*\n\n`{e}`", parse_mode="Markdown")
 
     await state.clear()
 
@@ -320,10 +368,10 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer(
-        "📢 *Broadcast Mode*\n\n"
+        "\U0001f4e2 *Broadcast Mode*\n\n"
         "Send the message you want delivered to all users.\n"
         "Supports text, photos, and videos.\n\n"
-        "⚠️ _Inactive (blocked) accounts are automatically removed from the database._",
+        "\u26a0\ufe0f _Inactive (blocked) accounts are automatically removed from the database._",
         parse_mode="Markdown"
     )
     await state.set_state(BroadcastFSM.waiting_for_message)
@@ -331,7 +379,7 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
 @dp.message(BroadcastFSM.waiting_for_message)
 async def execute_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
-    status_msg = await message.answer("⏳ Collecting user list…")
+    status_msg = await message.answer("\u23f3 Collecting user list\u2026")
 
     rows         = supabase.table("transactions").select("telegram_user_id").execute().data
     unique_users = {r["telegram_user_id"] for r in rows}
@@ -349,9 +397,9 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
             fail += 1
 
     await status_msg.edit_text(
-        f"✅ *Broadcast Complete!*\n\n"
-        f"📬 Delivered to:          *{success}* users\n"
-        f"🗑 Dead accounts removed: *{fail}*",
+        "\u2705 *Broadcast Complete!*\n\n"
+        f"\U0001f4ec Delivered to:          *{success}* users\n"
+        f"\U0001f5d1 Dead accounts removed: *{fail}*",
         parse_mode="Markdown"
     )
 
@@ -370,12 +418,12 @@ async def cmd_stats(message: types.Message):
     total_courses = len(supabase.table("courses").select("course_id").execute().data)
 
     await message.answer(
-        f"📊 *Bot Statistics*\n\n"
-        f"👥 Total Users:          *{total_users}*\n"
-        f"✅ Approved Sales:       *{total_sales}*\n"
-        f"📚 Courses Available:    *{total_courses}*\n"
-        f"🔗 Total Referrals:      *{total_refs}*\n"
-        f"💰 Referrals → Purchase: *{paid_refs}*",
+        "\U0001f4ca *Bot Statistics*\n\n"
+        f"\U0001f465 Total Users:          *{total_users}*\n"
+        f"\u2705 Approved Sales:       *{total_sales}*\n"
+        f"\U0001f4da Courses Available:    *{total_courses}*\n"
+        f"\U0001f517 Total Referrals:      *{total_refs}*\n"
+        f"\U0001f4b0 Referrals \u2192 Purchase: *{paid_refs}*",
         parse_mode="Markdown"
     )
 
@@ -383,7 +431,7 @@ async def cmd_stats(message: types.Message):
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    print("✅ Gateway Bot starting…")
+    print("\u2705 Gateway Bot starting\u2026")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
