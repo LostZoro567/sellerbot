@@ -14,9 +14,41 @@ BOT1_USERNAME         = os.getenv("BOT1_USERNAME", "YourGatewayBot")
 AUTO_DELETE_SECS      = 900    # 15 minutes
 REFERRAL_PERCENT      = 25     # % of numeric_price credited to referrer
 
+# ── Bundle (Buy All) pricing ───────────────────────────────────────────────────
+BUNDLE_PRICE_INR      = 1499   # ₹1499
+BUNDLE_PRICE_USD      = 22     # $22
+# course_id used to log bundle purchases in transactions table
+BUNDLE_COURSE_ID      = "bundle_all"
+# Delivery text sent after bundle purchase is approved
+BUNDLE_DELIVERY_TEXT  = (
+    "\U0001f389 *You now have access to the Full Collection!*\n\n"
+    "All course materials will be delivered below.\n"
+    "_Check each pinned link for access._"
+)
+
+# ── Discounts list — edit this section to add/remove deals ────────────────────
+# Each entry: { "label": button text, "detail": shown in the discounts screen }
+DISCOUNTS = [
+    {
+        "label": "\U0001f4da Buy All Courses \u2014 \u20b91,499 / $22",
+        "detail": (
+            "\U0001f525 *Full Collection Bundle*\n\n"
+            "Get *every course* we offer at a massive discount!\n\n"
+            "\u20b9 *India:*          \u20b91,499 (instead of paying per course)\n"
+            "\U0001f30d *International:* $22\n\n"
+            "Tap *Buy Now* on any course and select a payment method \u2014 "
+            "you'll be offered this bundle automatically."
+        ),
+    },
+    # Add more deals below in the same format:
+    # {
+    #     "label": "\U0001f4e6 Course A + Course B \u2014 \u20b9799",
+    #     "detail": "Details about this combo deal...",
+    # },
+]
+
 # Image shown on the payment method picker screen.
-# Replace this URL with your own banner if you want a custom image.
-PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
+PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/bMP4nQ7S/ee15c8361b23.jpg"
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
@@ -75,27 +107,31 @@ def _pay_referrer(buyer_id: int, numeric_price: float):
     return referrer_id, credit
 
 
+# ── Keyboard builders ──────────────────────────────────────────────────────────
+
 def _build_course_keyboard(course_id: str, wallet: float) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="\U0001f4b3  Buy Now", callback_data=f"buy_{course_id}")],
+        [InlineKeyboardButton(text="\U0001f4b3  Buy Now",   callback_data=f"buy:{course_id}")],
+        [InlineKeyboardButton(text="\U0001f3f7  Discounts", callback_data=f"discounts:{course_id}")],
     ]
     if wallet >= 1:
         rows.append([InlineKeyboardButton(
             text=f"\U0001f4b0  Use Wallet  (\u20b9{wallet:.2f} available)",
-            callback_data=f"usewallet_{course_id}"
+            callback_data=f"usewallet:{course_id}"
         )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _build_payment_options_keyboard(course_id: str) -> InlineKeyboardMarkup:
+    # course_id may be BUNDLE_COURSE_ID or a real course id
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="\U0001f4f7  QR Code",         callback_data=f"pay_qr_{course_id}")],
-        [InlineKeyboardButton(text="\U0001f7e3  Paytm / UPI",     callback_data=f"pay_paytm_{course_id}")],
-        [InlineKeyboardButton(text="\U0001f535  PayPal",           callback_data=f"pay_paypal_{course_id}")],
-        [InlineKeyboardButton(text="\U0001f7e0  Crypto (USDT)",    callback_data=f"pay_crypto_{course_id}")],
-        [InlineKeyboardButton(text="\U0001f4ac  Other Methods",    callback_data=f"pay_others_{course_id}")],
-        [InlineKeyboardButton(text="\U0001f381  Refer & Pay",      callback_data=f"referpay_{course_id}")],
-        [InlineKeyboardButton(text="\u2b05\ufe0f  Back to Course", callback_data=f"back_course_{course_id}")],
+        [InlineKeyboardButton(text="\U0001f4f7  QR Code",          callback_data=f"pay:qr:{course_id}")],
+        [InlineKeyboardButton(text="\U0001f7e3  Paytm / UPI",      callback_data=f"pay:paytm:{course_id}")],
+        [InlineKeyboardButton(text="\U0001f535  PayPal",            callback_data=f"pay:paypal:{course_id}")],
+        [InlineKeyboardButton(text="\U0001f7e0  Crypto (USDT)",     callback_data=f"pay:crypto:{course_id}")],
+        [InlineKeyboardButton(text="\U0001f4ac  Other Methods",     callback_data=f"pay:others:{course_id}")],
+        [InlineKeyboardButton(text="\U0001f381  Refer & Pay",       url=f"https://t.me/{BOT1_USERNAME}?start=refer")],
+        [InlineKeyboardButton(text="\u2b05\ufe0f  Back to Course",  callback_data=f"backcourse:{course_id}")],
     ])
 
 
@@ -123,7 +159,6 @@ async def handle_course_selection(message: types.Message, command: CommandObject
         "wallet_used":      0
     }).execute()
 
-    # Course message — stays permanently until auto-delete
     sent = await message.answer_photo(
         photo=course["bot2_image_id"],
         caption=(
@@ -138,17 +173,84 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id, AUTO_DELETE_SECS))
 
 
-# ── Buy Now — send a SEPARATE payment options message, course msg untouched ────
+# ── Discounts screen ───────────────────────────────────────────────────────────
 
-@dp.callback_query(F.data.startswith("buy_"))
+@dp.callback_query(F.data.startswith("discounts:"))
+async def show_discounts(callback: types.CallbackQuery):
+    course_id = callback.data.split(":", 1)[1]
+
+    if not DISCOUNTS:
+        return await callback.answer(
+            "\U0001f6a7 No active discounts right now. Check back soon!",
+            show_alert=True
+        )
+
+    lines = ["\U0001f3f7 *Available Discounts*\n"]
+    for i, d in enumerate(DISCOUNTS, 1):
+        lines.append(f"{i}. {d['detail']}\n")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="\u2b05\ufe0f  Back to Course", callback_data=f"backcourse:{course_id}")]
+    ])
+
+    await callback.message.edit_caption(
+        caption="\n".join(lines),
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+# ── Back to Course — deletes the payment message, course msg stays ─────────────
+
+@dp.callback_query(F.data.startswith("backcourse:"))
+async def back_to_course(callback: types.CallbackQuery):
+    # If this is the course message itself (has course keyboard), just restore it
+    # Otherwise delete the payment message
+    course_id = callback.data.split(":", 1)[1]
+    res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
+    if not res.data:
+        await _safe_delete(callback.message.chat.id, callback.message.message_id)
+        return await callback.answer()
+
+    course = res.data[0]
+    wallet = _get_wallet(callback.from_user.id)
+
+    # Try to restore the course card in place (discounts screen edits the course msg)
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=course["bot2_image_id"],
+                caption=(
+                    f"\U0001f4d8 *{course['title']}*\n\n"
+                    f"{course['bot2_text']}\n\n"
+                    f"\U0001f4b5 *Price:* {course['price']}\n\n"
+                    f"\u23f1 _This payment window closes in 15 minutes._"
+                ),
+                parse_mode="Markdown"
+            ),
+            reply_markup=_build_course_keyboard(course_id, wallet)
+        )
+    except Exception:
+        # If it's the payment popup (can't edit_media a non-photo or wrong msg), just delete it
+        await _safe_delete(callback.message.chat.id, callback.message.message_id)
+    await callback.answer()
+
+
+# ── Buy Now — send SEPARATE payment options message, course msg untouched ──────
+
+@dp.callback_query(F.data.startswith("buy:"))
 async def show_payment_methods(callback: types.CallbackQuery):
-    course_id = callback.data.split("buy_", 1)[1]
-    # Do NOT touch the course message — send a brand new payment message
+    course_id = callback.data.split(":", 1)[1]
+    res = supabase.table("courses").select("numeric_price, price").eq("course_id", course_id).execute()
+    price_display = res.data[0]["price"] if res.data else "?"
+
     sent = await bot.send_photo(
         chat_id=callback.from_user.id,
         photo=PAYMENT_OPTIONS_IMAGE,
         caption=(
             "\U0001f3e6 *Choose a Payment Method*\n\n"
+            f"\U0001f4b5 *Your price:* {price_display}\n\n"
             "Select how you'd like to pay below.\n"
             "After paying, send your payment screenshot here.\n\n"
             "\u23f1 _This window closes in 15 minutes._"
@@ -160,24 +262,25 @@ async def show_payment_methods(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ── Back to Course — delete the payment message only, course msg stays ─────────
-
-@dp.callback_query(F.data.startswith("back_course_"))
-async def back_to_course(callback: types.CallbackQuery):
-    await _safe_delete(callback.message.chat.id, callback.message.message_id)
-    await callback.answer()
-
-
 # ── Back to Payment Options — edit image back in place ────────────────────────
 
-@dp.callback_query(F.data.startswith("back_pay_"))
+@dp.callback_query(F.data.startswith("backpay:"))
 async def back_to_payment_options(callback: types.CallbackQuery):
-    course_id = callback.data.split("back_pay_", 1)[1]
+    course_id = callback.data.split(":", 1)[1]
+
+    # Fetch price display
+    if course_id == BUNDLE_COURSE_ID:
+        price_display = f"\u20b9{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}"
+    else:
+        res = supabase.table("courses").select("price").eq("course_id", course_id).execute()
+        price_display = res.data[0]["price"] if res.data else "?"
+
     await callback.message.edit_media(
         media=InputMediaPhoto(
             media=PAYMENT_OPTIONS_IMAGE,
             caption=(
                 "\U0001f3e6 *Choose a Payment Method*\n\n"
+                f"\U0001f4b5 *Your price:* {price_display}\n\n"
                 "Select how you'd like to pay below.\n"
                 "After paying, send your payment screenshot here.\n\n"
                 "\u23f1 _This window closes in 15 minutes._"
@@ -189,110 +292,180 @@ async def back_to_payment_options(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ── Refer & Pay — send user to Bot 1 referral program via deep link ────────────
+# ── Bundle upsell — shown before every payment method ─────────────────────────
+# Intercepts pay:METHOD:COURSEID, shows bundle offer first.
+# After yes/no the actual payment detail is shown.
 
-@dp.callback_query(F.data.startswith("referpay_"))
-async def show_refer_and_pay(callback: types.CallbackQuery):
-    course_id = callback.data.split("_", 1)[1]
+@dp.callback_query(F.data.startswith("pay:"))
+async def payment_bundle_intercept(callback: types.CallbackQuery):
+    # Format: pay:METHOD:COURSE_ID  (colons used — no ambiguity with underscores)
+    parts     = callback.data.split(":", 2)
+    method    = parts[1] if len(parts) > 1 else ""
+    course_id = parts[2] if len(parts) > 2 else ""
+
+    # If already a bundle purchase, skip the upsell and go straight to payment
+    if course_id == BUNDLE_COURSE_ID:
+        return await _show_payment_detail(callback, method, course_id)
+
+    # Fetch this course's price for comparison
+    res           = supabase.table("courses").select("price, numeric_price").eq("course_id", course_id).execute()
+    course        = res.data[0] if res.data else {}
+    single_price  = course.get("price", "?")
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="\U0001f517  Open Referral Program",
-            url=f"https://t.me/{BOT1_USERNAME}?start=refer"
-        )],
-        [InlineKeyboardButton(
-            text="\u2b05\ufe0f  Back to Payment Options",
-            callback_data=f"back_pay_{course_id}"
-        )]
+        [
+            InlineKeyboardButton(
+                text="\u2705  Yes, upgrade me!",
+                callback_data=f"bundleyes:{method}:{course_id}"
+            ),
+            InlineKeyboardButton(
+                text="\u274c  No, keep my course",
+                callback_data=f"bundleno:{method}:{course_id}"
+            ),
+        ]
     ])
-    await callback.message.edit_caption(
-        caption=(
-            "\U0001f381 *Refer & Pay*\n\n"
-            "Earn wallet credits by sharing your referral link!\n\n"
-            f"When a friend joins through your link and buys a course, "
-            f"you earn *{REFERRAL_PERCENT}%* of their purchase straight to your wallet.\n\n"
-            "Tap the button below to open the full referral program in the main bot \u2014 "
-            "grab your link, check your balance, and start earning! \U0001f4b8"
+
+    await callback.message.edit_media(
+        media=InputMediaPhoto(
+            media=PAYMENT_OPTIONS_IMAGE,
+            caption=(
+                "\U0001f525 *Wait \u2014 Big Savings Available!*\n\n"
+                f"You're about to pay *{single_price}* for one course.\n\n"
+                "\U0001f4e6 *Full Collection Bundle*\n"
+                f"Get *all our courses* for just *\u20b9{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}*\n\n"
+                "That's every course we offer at one unbeatable price.\n\n"
+                "\U0001f4ac *Would you like to upgrade to the full collection?*"
+            ),
+            parse_mode="Markdown"
         ),
-        reply_markup=kb,
-        parse_mode="Markdown"
+        reply_markup=kb
     )
     await callback.answer()
 
 
-# ── Individual payment method screens — edit image in place ───────────────────
+@dp.callback_query(F.data.startswith("bundleyes:"))
+async def bundle_yes(callback: types.CallbackQuery):
+    parts     = callback.data.split(":", 2)
+    method    = parts[1]
+    course_id = parts[2]  # original course (kept for back nav)
+    user_id   = callback.from_user.id
+
+    # Log a bundle transaction
+    supabase.table("transactions").insert({
+        "telegram_user_id": user_id,
+        "course_id":        BUNDLE_COURSE_ID,
+        "status":           "pending_payment",
+        "wallet_used":      0
+    }).execute()
+
+    await _show_payment_detail(callback, method, BUNDLE_COURSE_ID)
+
+
+@dp.callback_query(F.data.startswith("bundleno:"))
+async def bundle_no(callback: types.CallbackQuery):
+    parts     = callback.data.split(":", 2)
+    method    = parts[1]
+    course_id = parts[2]
+    await _show_payment_detail(callback, method, course_id)
+
+
+# ── Individual payment detail screens ─────────────────────────────────────────
 
 PAYMENT_METHODS = {
     "qr": {
-        "text": (
+        "text_inr": (
             "\U0001f4f7 *QR Code Payment*\n\n"
             "Scan the QR code above to complete your payment.\n\n"
-            "\U0001f4f8 *Once paid:* send your payment screenshot right here in this chat.\n\n"
-            "\u23f1 _This window closes in 15 minutes._"
+            "\U0001f4f8 *Once paid:* send your payment screenshot right here.\n\n"
+            "\u23f1 _Window closes in 15 minutes._"
         ),
         "image": "https://i.ibb.co/bMP4nQ7S/ee15c8361b23.jpg",
     },
     "paytm": {
-        "text": (
+        "text_inr": (
             "\U0001f7e3 *Paytm / UPI Payment*\n\n"
             "Send payment to the UPI ID below:\n\n"
             "\U0001f511 UPI ID: `womp@ptyes`\n\n"
-            "\U0001f4f8 *Once paid:* send your payment screenshot right here in this chat.\n\n"
-            "\u23f1 _This window closes in 15 minutes._"
+            "\U0001f4f8 *Once paid:* send your payment screenshot right here.\n\n"
+            "\u23f1 _Window closes in 15 minutes._"
         ),
         "image": "https://i.ibb.co/Gf4dxt28/bdb68f4ab32e.jpg",
     },
     "paypal": {
-        "text": (
+        "text_inr": (
             "\U0001f535 *PayPal Payment*\n\n"
-            "Send payment to the email below:\n\n"
-            "\U0001f4e7 Email: `Ankitmallick5790@gmail.com`\n\n"
-            "\U0001f4f8 *Once paid:* send your payment screenshot right here in this chat.\n\n"
-            "\u23f1 _This window closes in 15 minutes._"
+            "Send payment to:\n\n"
+            "\U0001f4e7 `Ankitmallick5790@gmail.com`\n\n"
+            "\U0001f310 *International price shown below*\n\n"
+            "\U0001f4f8 *Once paid:* send your payment screenshot right here.\n\n"
+            "\u23f1 _Window closes in 15 minutes._"
         ),
         "image": "https://i.ibb.co/gLPBppVv/1d77334f059d.jpg",
+        "international": True,
     },
     "crypto": {
-        "text": (
+        "text_inr": (
             "\U0001f7e0 *Crypto Payment \u2014 USDT (BEP20)*\n\n"
-            "Send USDT to the wallet address below:\n\n"
-            "\U0001f45b Address:\n`0x1da04f30bdc147612a625b203217f50cdb84e2f6`\n\n"
-            "\u26a0\ufe0f _Make sure you're sending on the BEP20 network!_\n\n"
-            "\U0001f4f8 *Once paid:* send your payment screenshot right here in this chat.\n\n"
-            "\u23f1 _This window closes in 15 minutes._"
+            "Send USDT to:\n\n"
+            "\U0001f45b `0x1da04f30bdc147612a625b203217f50cdb84e2f6`\n\n"
+            "\u26a0\ufe0f _Send on BEP20 network only!_\n\n"
+            "\U0001f310 *International price shown below*\n\n"
+            "\U0001f4f8 *Once paid:* send your payment screenshot right here.\n\n"
+            "\u23f1 _Window closes in 15 minutes._"
         ),
         "image": "https://i.ibb.co/T5X40Ys/2a024034c5aa.jpg",
+        "international": True,
     },
     "others": {
-        "text": (
+        "text_inr": (
             "\U0001f4ac *Other Payment Methods*\n\n"
-            "Tap the button below to message the admin directly and arrange payment.\n\n"
-            "\U0001f4f8 *Once paid:* send your payment screenshot right here in this chat."
+            "Message the admin directly to arrange payment.\n\n"
+            "\U0001f4f8 *Once paid:* send your payment screenshot right here."
         ),
         "image": "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg",
-        "extra_buttons": [[InlineKeyboardButton(text="\U0001f464 Message Admin", url="https://t.me/ProSeller_69")]],
+        "extra_buttons": [[InlineKeyboardButton(
+            text="\U0001f464 Message Admin",
+            url="https://t.me/ProSeller_69"
+        )]],
     },
 }
 
-@dp.callback_query(F.data.startswith("pay_"))
-async def show_payment_details(callback: types.CallbackQuery):
-    parts     = callback.data.split("_", 2)   # ["pay", "METHOD", "course_id"]
-    method    = parts[1] if len(parts) > 1 else ""
-    course_id = parts[2] if len(parts) > 2 else ""
+# USD conversion rate — update this when needed
+INR_TO_USD_RATE = 0.012   # 1 INR ≈ $0.012
 
+
+async def _show_payment_detail(callback: types.CallbackQuery, method: str, course_id: str):
+    """Edit the current message to show the specific payment method details."""
     info = PAYMENT_METHODS.get(method)
     if not info:
         return await callback.answer("Unknown payment method.", show_alert=True)
 
+    # Build price line
+    if course_id == BUNDLE_COURSE_ID:
+        inr_amount = BUNDLE_PRICE_INR
+        usd_amount = BUNDLE_PRICE_USD
+        price_line = f"\U0001f4b5 *Amount:* \u20b9{inr_amount:,} / ${usd_amount}"
+    else:
+        res        = supabase.table("courses").select("price, numeric_price").eq("course_id", course_id).execute()
+        course     = res.data[0] if res.data else {}
+        inr_amount = float(course.get("numeric_price", 0))
+        usd_amount = round(inr_amount * INR_TO_USD_RATE, 2)
+        if info.get("international"):
+            price_line = f"\U0001f4b5 *Amount:* \u20b9{inr_amount:.0f} / ${usd_amount}"
+        else:
+            price_line = f"\U0001f4b5 *Amount:* \u20b9{inr_amount:.0f}"
+
+    caption = f"{info['text_inr']}\n\n{price_line}"
+
     back_row = [InlineKeyboardButton(
         text="\u2b05\ufe0f  Back to Payment Options",
-        callback_data=f"back_pay_{course_id}"
+        callback_data=f"backpay:{course_id}"
     )]
     extra    = info.get("extra_buttons", [])
     keyboard = InlineKeyboardMarkup(inline_keyboard=extra + [back_row])
 
-    # Edit image and caption in-place — no delete, no new message
     await callback.message.edit_media(
-        media=InputMediaPhoto(media=info["image"], caption=info["text"], parse_mode="Markdown"),
+        media=InputMediaPhoto(media=info["image"], caption=caption, parse_mode="Markdown"),
         reply_markup=keyboard
     )
     await callback.answer()
@@ -300,10 +473,10 @@ async def show_payment_details(callback: types.CallbackQuery):
 
 # ── Wallet redeem ──────────────────────────────────────────────────────────────
 
-@dp.callback_query(F.data.startswith("usewallet_"))
+@dp.callback_query(F.data.startswith("usewallet:"))
 async def use_wallet(callback: types.CallbackQuery):
     user_id   = callback.from_user.id
-    course_id = callback.data.split("usewallet_", 1)[1]
+    course_id = callback.data.split(":", 1)[1]
 
     res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
     if not res.data:
@@ -323,7 +496,6 @@ async def use_wallet(callback: types.CallbackQuery):
         .eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
 
     if amount_due == 0:
-        # Fully covered by wallet
         _deduct_wallet(user_id, discount)
 
         latest_tx = supabase.table("transactions").select("id") \
@@ -371,9 +543,8 @@ async def use_wallet(callback: types.CallbackQuery):
         )
 
     else:
-        # Partial — send a new payment message with the discount applied
         back_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="\u2b05\ufe0f  Back to Course", callback_data=f"back_course_{course_id}")]
+            [InlineKeyboardButton(text="\u2b05\ufe0f  Back to Course", callback_data=f"backcourse:{course_id}")]
         ])
         sent = await bot.send_photo(
             chat_id=user_id,
@@ -383,7 +554,7 @@ async def use_wallet(callback: types.CallbackQuery):
                 f"\u250c \U0001f3ab Wallet credit used:   *\u20b9{discount:.2f}*\n"
                 f"\u2514 \U0001f4b5 Remaining to pay:     *\u20b9{amount_due:.2f}*\n\n"
                 f"Please pay the remaining *\u20b9{amount_due:.2f}* using any payment method "
-                f"and send your screenshot here.\n\n"
+                "and send your screenshot here.\n\n"
                 "\u23f1 _This window closes in 15 minutes._"
             ),
             reply_markup=back_kb,
@@ -458,16 +629,17 @@ async def admin_decision(callback: types.CallbackQuery):
 
     transaction = res.data[0]
 
-    # Guard: already processed
     if transaction["status"] in ("approved", "rejected"):
-        await callback.answer("\u26a0\ufe0f Already processed \u2014 this payment was already handled.", show_alert=True)
+        await callback.answer(
+            "\u26a0\ufe0f Already processed \u2014 this payment was already handled.",
+            show_alert=True
+        )
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
         return
 
-    # Remove buttons immediately to prevent double-tap
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
@@ -483,12 +655,19 @@ async def admin_decision(callback: types.CallbackQuery):
         if wallet_used > 0:
             _deduct_wallet(user_id, wallet_used)
 
-        cr     = supabase.table("courses").select("*").eq("course_id", course_id).execute()
-        course = cr.data[0]
-
-        numeric_price = float(course.get("numeric_price", 0))
-        del_text      = course.get("delivery_text", "\u2705 Payment verified! Here is your course material.")
-        del_file_id   = course.get("delivery_file_id")
+        # Bundle purchase — use bundle price and delivery text
+        if course_id == BUNDLE_COURSE_ID:
+            numeric_price = float(BUNDLE_PRICE_INR)
+            del_text      = BUNDLE_DELIVERY_TEXT
+            del_file_id   = None
+            course_title  = "Full Collection Bundle"
+        else:
+            cr            = supabase.table("courses").select("*").eq("course_id", course_id).execute()
+            course        = cr.data[0]
+            numeric_price = float(course.get("numeric_price", 0))
+            del_text      = course.get("delivery_text", "\u2705 Payment verified! Here is your course material.")
+            del_file_id   = course.get("delivery_file_id")
+            course_title  = course["title"]
 
         if del_file_id:
             sent = await bot.send_document(
@@ -510,7 +689,7 @@ async def admin_decision(callback: types.CallbackQuery):
                 await bot.send_message(
                     referrer_id,
                     f"\U0001f4b8 *\u20b9{credit:.2f} added to your wallet!*\n\n"
-                    f"Your referral just purchased *{course['title']}*.\n\n"
+                    f"Your referral just purchased *{course_title}*.\n\n"
                     f"[Check your wallet \u2192](https://t.me/{BOT1_USERNAME})",
                     parse_mode="Markdown"
                 )
