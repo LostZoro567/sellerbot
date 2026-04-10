@@ -49,16 +49,13 @@ def _ensure_user(user_id: int, username=None):
             "wallet_balance":   0
         }).execute()
 
-
 def _get_wallet(user_id: int) -> float:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     return float(row.data[0]["wallet_balance"]) if row.data else 0.0
 
-
 def _add_wallet(user_id: int, amount: float):
     current = _get_wallet(user_id)
     supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
-
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
     current = _get_wallet(user_id)
@@ -156,8 +153,7 @@ async def handle_start(message: types.Message, command: CommandObject):
     courses = supabase.table("courses").select("course_id, title").execute().data
     builder = InlineKeyboardBuilder()
     for c in courses:
-        # Exclude the bundle_all from listing directly in start menu
-        if c["course_id"] != 'bundle_all':
+        if c["course_id"] != "bundle_all":
             builder.row(InlineKeyboardButton(
                 text=f"📘 {c['title']}",
                 url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
@@ -298,7 +294,6 @@ async def process_price_usd(message: types.Message, state: FSMContext):
     data = await state.get_data()
     numeric_inr = data.get("numeric_price", 0)
     
-    # Format string (e.g. ₹400 / $15)
     display_price = f"₹{numeric_inr:g} / ${usd_val:g}"
     await state.update_data(price=display_price)
     
