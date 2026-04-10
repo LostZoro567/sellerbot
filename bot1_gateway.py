@@ -66,7 +66,8 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
         return False
     supabase.table("users").update({"wallet_balance": round(current - amount, 2)}).eq("telegram_user_id", user_id).execute()
     return True
-    
+
+
 # ── Shared helper: full referral program screen ────────────────────────────────
 
 async def _send_referral_info(user_id: int, username, target: types.Message):
@@ -156,10 +157,10 @@ async def handle_start(message: types.Message, command: CommandObject):
     builder = InlineKeyboardBuilder()
     for c in courses:
         # Exclude the bundle_all from listing directly in start menu
-        if c != 'bundle_all':
+        if c["course_id"] != 'bundle_all':
             builder.row(InlineKeyboardButton(
-                text=f"📘 {c}",
-                url=f"https://t.me/{BOT2_USERNAME}?start={c}"
+                text=f"📘 {c['title']}",
+                url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
             ))
 
     wallet      = _get_wallet(user_id)
@@ -348,18 +349,18 @@ async def process_delivery_content(message: types.Message, state: FSMContext):
 
     try:
         supabase.table("courses").insert({
-            "course_id":        data,
-            "title":            data,
-            "price":            data,
-            "numeric_price":    data,
-            "bot2_text":        data,
-            "bot2_image_id":    data,
+            "course_id":        data["course_id"],
+            "title":            data["title"],
+            "price":            data["price"],
+            "numeric_price":    data["numeric_price"],
+            "bot2_text":        data["bot2_text"],
+            "bot2_image_id":    data["bot2_image_id"],
             "delivery_text":    delivery_text,
             "delivery_file_id": delivery_file_id,
         }).execute()
         await message.answer(
             "🎉 *Course Added Successfully!*\n\n"
-            f"📘 *{data}* is now live and ready to sell.",
+            f"📘 *{data['title']}* is now live and ready to sell.",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -389,7 +390,7 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
     status_msg = await message.answer("⏳ Collecting user list…")
 
     rows         = supabase.table("transactions").select("telegram_user_id").execute().data
-    unique_users = {r for r in rows}
+    unique_users = {r["telegram_user_id"] for r in rows}
 
     success = fail = 0
     for uid in unique_users:
