@@ -54,14 +54,24 @@ def _get_wallet(user_id: int) -> float:
     return float(row.data[0]["wallet_balance"]) if row.data else 0.0
 
 def _add_wallet(user_id: int, amount: float):
-    current = _get_wallet(user_id)
-    supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
+    row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
+    if row.data:
+        current = float(row.data[0]["wallet_balance"])
+        supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
+    else:
+        supabase.table("users").insert({
+            "telegram_user_id": user_id,
+            "username": "",
+            "wallet_balance": round(amount, 2)
+        }).execute()
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
     current = _get_wallet(user_id)
-    if current < amount:
+    # Safe floating point comparison (-0.02 tolerance)
+    if current < (amount - 0.02):
         return False
-    supabase.table("users").update({"wallet_balance": round(current - amount, 2)}).eq("telegram_user_id", user_id).execute()
+    new_balance = max(0.0, round(current - amount, 2))
+    supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
     return True
 
 
