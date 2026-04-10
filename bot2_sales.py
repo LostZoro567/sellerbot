@@ -79,30 +79,52 @@ def _add_wallet(user_id: int, amount: float):
         }).execute()
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
+    """
+    FIX: Removed the 0.02 tolerance exploit. Now uses strict >= check.
+    Returns True and deducts only if user genuinely has enough balance.
+    """
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if not row.data:
         return False
     current = float(row.data[0]["wallet_balance"])
-    
-    # Tolerates up to 0.02 floating point variance safely
-    if current < (amount - 0.02):
+
+    # FIX: strict check — no tolerance that could allow negative balance
+    if current < amount:
         return False
-        
+
     new_balance = max(0.0, round(current - amount, 2))
     supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
     return True
 
-def _pay_referrer(buyer_id: int, numeric_price: float):
+def _pay_referrer(buyer_id: int, numeric_price: float, transaction_id: int):
+    """
+    FIX: Now accepts transaction_id and checks referral payment against this
+    specific transaction to prevent double-payment on multiple purchases.
+    Guards are: referral must exist, status != "purchased", and we update
+    atomically before crediting wallet to prevent race condition.
+    """
     ref_row = supabase.table("referrals").select("*").eq("referred_user_id", buyer_id).execute()
     if not ref_row.data:
         return None, 0
     ref = ref_row.data[0]
     if ref["status"] == "purchased":
         return None, 0
+
     referrer_id = ref["referrer_id"]
     credit      = round(numeric_price * REFERRAL_PERCENT / 100, 2)
+
+    # FIX: Mark referral as "purchased" FIRST before crediting wallet
+    # to prevent a race condition where two concurrent approvals both
+    # see status != "purchased" and both credit the referrer.
+    update_result = supabase.table("referrals").update(
+        {"status": "purchased", "paid_on_transaction_id": transaction_id}
+    ).eq("id", ref["id"]).eq("status", "joined").execute()
+
+    # Only credit if the update actually changed a row (atomic guard)
+    if not update_result.data:
+        return None, 0
+
     _add_wallet(referrer_id, credit)
-    supabase.table("referrals").update({"status": "purchased"}).eq("id", ref["id"]).execute()
     return referrer_id, credit
 
 
@@ -142,12 +164,23 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     if not course_id:
         return await message.answer("⚠️ Please use a valid course link to start.")
 
+    # FIX: Prevent direct access to bundle_all via /start — it must go through the discounts menu
+    if course_id == BUNDLE_COURSE_ID:
+        return await message.answer("⚠️ Please use a valid course link to start.")
+
     res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
     if not res.data:
         return await message.answer("❌ Course not found or the link is invalid.")
 
     course = res.data[0]
     wallet = _get_wallet(user_id)
+
+    # FIX: Cancel any existing pending_payment transactions for this user before
+    # creating a new one. Prevents accumulation of ghost pending rows that could
+    # be exploited with multiple screenshot uploads or wallet button spam.
+    supabase.table("transactions").update({"status": "cancelled"}).eq(
+        "telegram_user_id", user_id
+    ).eq("status", "pending_payment").execute()
 
     supabase.table("transactions").insert({
         "telegram_user_id": user_id,
@@ -231,25 +264,31 @@ async def back_to_course(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("buy:"))
 async def show_payment_methods(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
-    
-    # Fixes direct cart purchase: Ensures a pending transaction is ready for screenshots
-    res_tx = supabase.table("transactions").select("id").eq("telegram_user_id", callback.from_user.id).eq("status", "pending_payment").execute()
-    if res_tx.data:
-        supabase.table("transactions").update({"course_id": course_id}).eq("id", res_tx.data[-1]["id"]).execute()
-    else:
-        supabase.table("transactions").insert({
-            "telegram_user_id": callback.from_user.id,
-            "course_id":        course_id,
-            "status":           "pending_payment",
-            "wallet_used":      0
-        }).execute()
+    user_id   = callback.from_user.id
 
-    res = supabase.table("courses").select("price").eq("course_id", course_id).execute()
-    price_display = res.data[0]["price"] if res.data else "?"
+    # FIX: Cancel stale pending transactions and create a fresh one for this course.
+    # Previously this only updated the last pending row's course_id, which could
+    # silently rebind a partially-wallet-applied transaction to a different course.
+    supabase.table("transactions").update({"status": "cancelled"}).eq(
+        "telegram_user_id", user_id
+    ).eq("status", "pending_payment").execute()
+
+    supabase.table("transactions").insert({
+        "telegram_user_id": user_id,
+        "course_id":        course_id,
+        "status":           "pending_payment",
+        "wallet_used":      0
+    }).execute()
+
+    if course_id == BUNDLE_COURSE_ID:
+        price_display = f"₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}"
+    else:
+        res = supabase.table("courses").select("price").eq("course_id", course_id).execute()
+        price_display = res.data[0]["price"] if res.data else "?"
 
     try:
         sent = await bot.send_photo(
-            chat_id=callback.from_user.id,
+            chat_id=user_id,
             photo=PAYMENT_OPTIONS_IMAGE,
             caption=(
                 "🏦 *Choose a Payment Method*\n\n"
@@ -261,8 +300,8 @@ async def show_payment_methods(callback: types.CallbackQuery):
             reply_markup=_build_payment_options_keyboard(course_id),
             parse_mode="Markdown"
         )
-        asyncio.create_task(_auto_delete(callback.from_user.id, sent.message_id, AUTO_DELETE_SECS))
-    except Exception as e:
+        asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
+    except Exception:
         await callback.answer("⚠️ General Payment Image link is broken in the code. Update PAYMENT_OPTIONS_IMAGE.", show_alert=True)
     
     await callback.answer()
@@ -339,16 +378,17 @@ async def bundle_yes(callback: types.CallbackQuery):
     course_id = parts[2]
     user_id   = callback.from_user.id
 
-    res_tx = supabase.table("transactions").select("id").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
-    if res_tx.data:
-        supabase.table("transactions").update({"course_id": BUNDLE_COURSE_ID}).eq("id", res_tx.data[-1]["id"]).execute()
-    else:
-        supabase.table("transactions").insert({
-            "telegram_user_id": user_id,
-            "course_id":        BUNDLE_COURSE_ID,
-            "status":           "pending_payment",
-            "wallet_used":      0
-        }).execute()
+    # FIX: Same as show_payment_methods — cancel old pending, create fresh one
+    supabase.table("transactions").update({"status": "cancelled"}).eq(
+        "telegram_user_id", user_id
+    ).eq("status", "pending_payment").execute()
+
+    supabase.table("transactions").insert({
+        "telegram_user_id": user_id,
+        "course_id":        BUNDLE_COURSE_ID,
+        "status":           "pending_payment",
+        "wallet_used":      0
+    }).execute()
 
     await _show_payment_detail(callback, method, BUNDLE_COURSE_ID)
 
@@ -433,13 +473,12 @@ async def _show_payment_detail(callback: types.CallbackQuery, method: str, cours
     extra    = info.get("extra_buttons", [])
     keyboard = InlineKeyboardMarkup(inline_keyboard=extra + [back_row])
 
-    # Saftey check added here so a dead image link doesn't freeze the bot
     try:
         await callback.message.edit_media(
             media=InputMediaPhoto(media=info["image"], caption=caption, parse_mode="Markdown"),
             reply_markup=keyboard
         )
-    except Exception as e:
+    except Exception:
         await callback.answer(f"⚠️ The image link for {method.upper()} is broken. Please update it in the code.", show_alert=True)
         
     await callback.answer()
@@ -451,6 +490,23 @@ async def _show_payment_detail(callback: types.CallbackQuery, method: str, cours
 async def use_wallet(callback: types.CallbackQuery):
     user_id   = callback.from_user.id
     course_id = callback.data.split(":", 1)[1]
+
+    # FIX: Fetch the one specific pending transaction for this exact course,
+    # not a broad update across all pending rows.
+    tx_res = supabase.table("transactions").select("*").eq(
+        "telegram_user_id", user_id
+    ).eq("status", "pending_payment").eq("course_id", course_id).execute()
+
+    if not tx_res.data:
+        return await callback.answer("⚠️ No active session for this course. Please open the course link again.", show_alert=True)
+
+    transaction = tx_res.data[-1]
+    trans_id    = transaction["id"]
+
+    # FIX: Prevent wallet button spam — if wallet_used is already set on this
+    # transaction, the user already applied their wallet discount.
+    if float(transaction.get("wallet_used") or 0) > 0:
+        return await callback.answer("✅ Wallet discount already applied to this order.", show_alert=True)
 
     res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
     if not res.data:
@@ -466,14 +522,20 @@ async def use_wallet(callback: types.CallbackQuery):
     discount   = min(wallet, numeric_price)
     amount_due = max(0.0, round(numeric_price - discount, 2))
 
-    supabase.table("transactions").update({"wallet_used": discount}).eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
+    # FIX: Update only the specific transaction by its ID, not all pending rows.
+    supabase.table("transactions").update({"wallet_used": discount}).eq("id", trans_id).execute()
 
     if amount_due == 0:
-        _deduct_wallet(user_id, discount)
+        # FIX: Deduct wallet FIRST (returns False if insufficient), then approve transaction.
+        # Previously wallet was deducted here AND again in admin_decision → double deduction.
+        # Now: full-wallet purchases are self-approved here with deduction only once.
+        # admin_decision will see status="approved" and skip the second deduct.
+        if not _deduct_wallet(user_id, discount):
+            # Race condition: someone else already drained the wallet
+            supabase.table("transactions").update({"wallet_used": 0}).eq("id", trans_id).execute()
+            return await callback.answer("⚠️ Wallet balance changed. Please try again.", show_alert=True)
 
-        latest_tx = supabase.table("transactions").select("id").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
-        if latest_tx.data:
-            supabase.table("transactions").update({"status": "approved"}).eq("id", latest_tx.data[-1]["id"]).execute()
+        supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
         del_text    = course.get("delivery_text", "✅ Here is your course material.")
         del_file_id = course.get("delivery_file_id")
@@ -492,7 +554,7 @@ async def use_wallet(callback: types.CallbackQuery):
             )
         asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
 
-        referrer_id, credit = _pay_referrer(user_id, numeric_price)
+        referrer_id, credit = _pay_referrer(user_id, numeric_price, trans_id)
         if referrer_id:
             try:
                 await bot.send_message(
@@ -540,7 +602,13 @@ async def use_wallet(callback: types.CallbackQuery):
 async def handle_screenshot(message: types.Message):
     user_id = message.from_user.id
 
-    res = supabase.table("transactions").select("*").eq("telegram_user_id", user_id).eq("status", "pending_payment").execute()
+    # FIX: Only ever bind a screenshot to one transaction — and explicitly
+    # pick the single most recent pending_payment row. Using .execute().data[-1]
+    # was correct before, but we now also guard against there being >1 pending row
+    # (those should have been cancelled on new course open, but just in case).
+    res = supabase.table("transactions").select("*").eq(
+        "telegram_user_id", user_id
+    ).eq("status", "pending_payment").order("id", desc=True).limit(1).execute()
 
     if not res.data:
         return await message.answer(
@@ -549,9 +617,8 @@ async def handle_screenshot(message: types.Message):
             parse_mode="Markdown"
         )
 
-    transaction = res.data[-1]
+    transaction = res.data[0]
     trans_id    = transaction["id"]
-    # Handled safely if explicitly set to null in DB
     wallet_used = float(transaction.get("wallet_used") or 0.0)
 
     supabase.table("transactions").update({"status": "awaiting_approval"}).eq("id", trans_id).execute()
@@ -631,7 +698,15 @@ async def admin_decision(callback: types.CallbackQuery):
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
+        # FIX: Only deduct wallet for PARTIAL wallet payments (amount_due > 0).
+        # Full-wallet purchases (amount_due == 0) are already deducted and approved
+        # in use_wallet handler — deducting here again would double-charge the user.
+        # We detect this by checking if the transaction was already in "approved"
+        # state before we just set it (it wasn't — see guard above), but we still
+        # only deduct if the transaction came from the screenshot path (awaiting_approval),
+        # which means the user paid the remainder manually.
         if wallet_used > 0:
+            # Partial wallet: deduct the wallet portion now that payment is confirmed
             _deduct_wallet(user_id, wallet_used)
 
         if course_id == BUNDLE_COURSE_ID:
@@ -661,7 +736,7 @@ async def admin_decision(callback: types.CallbackQuery):
             )
         asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
 
-        referrer_id, credit = _pay_referrer(user_id, numeric_price)
+        referrer_id, credit = _pay_referrer(user_id, numeric_price, int(trans_id))
         if referrer_id:
             try:
                 await bot.send_message(
@@ -681,6 +756,10 @@ async def admin_decision(callback: types.CallbackQuery):
 
     elif action == "reject":
         supabase.table("transactions").update({"status": "rejected"}).eq("id", trans_id).execute()
+
+        # FIX: Refund wallet_used back to user on rejection so they don't lose balance
+        if wallet_used > 0:
+            _add_wallet(user_id, wallet_used)
 
         await bot.send_message(
             user_id,
