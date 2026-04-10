@@ -292,7 +292,7 @@ async def process_price_usd(message: types.Message, state: FSMContext):
         )
     
     data = await state.get_data()
-    numeric_inr = data
+    numeric_inr = data.get("numeric_price", 0)
     
     # Format string (e.g. ₹400 / $15)
     display_price = f"₹{numeric_inr:g} / ${usd_val:g}"
