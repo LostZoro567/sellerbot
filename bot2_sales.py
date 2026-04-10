@@ -72,8 +72,7 @@ def _pay_referrer(buyer_id: int, numeric_price: float):
 def _build_course_keyboard(course_id: str, wallet: float) -> InlineKeyboardMarkup:
     """Build the landing page keyboard for a given course."""
     rows = [
-        [InlineKeyboardButton(text="💳  Buy Now",             callback_data=f"buy_{course_id}")],
-        [InlineKeyboardButton(text="🎁  Refer & Pay",         callback_data=f"referpay_{course_id}")],
+        [InlineKeyboardButton(text="💳  Buy Now", callback_data=f"buy_{course_id}")],
     ]
     if wallet >= 1:
         rows.append([InlineKeyboardButton(
@@ -140,7 +139,7 @@ async def show_refer_and_pay(callback: types.CallbackQuery):
     wallet        = _get_wallet(user_id)
 
     back_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"back_course_{course_id}")]
+        [InlineKeyboardButton(text="⬅️  Back to Payment Options", callback_data=f"buy_{course_id}")]
     ])
 
     await callback.message.edit_caption(
@@ -209,6 +208,7 @@ async def show_payment_methods(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🔵  PayPal",           callback_data=f"pay_paypal_{course_id}")],
         [InlineKeyboardButton(text="🟠  Crypto (USDT)",    callback_data=f"pay_crypto_{course_id}")],
         [InlineKeyboardButton(text="💬  Other Methods",    callback_data=f"pay_others_{course_id}")],
+        [InlineKeyboardButton(text="🎁  Refer & Pay",      callback_data=f"referpay_{course_id}")],
         [InlineKeyboardButton(text="⬅️  Back to Course",   callback_data=f"back_course_{course_id}")],
     ])
     await callback.message.edit_caption(
