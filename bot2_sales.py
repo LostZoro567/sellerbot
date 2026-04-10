@@ -8,11 +8,14 @@ from db import supabase
 
 load_dotenv()
 
-BOT_TOKEN        = os.getenv("BOT2_TOKEN")
-ADMIN_ID         = int(os.getenv("ADMIN_ID"))
-BOT1_USERNAME    = os.getenv("BOT1_USERNAME", "YourGatewayBot")
-AUTO_DELETE_SECS = 900   # 15 minutes
-REFERRAL_PERCENT = 25    # % of numeric_price credited to referrer
+BOT_TOKEN             = os.getenv("BOT2_TOKEN")
+ADMIN_ID              = int(os.getenv("ADMIN_ID"))
+BOT1_USERNAME         = os.getenv("BOT1_USERNAME", "YourGatewayBot")
+AUTO_DELETE_SECS      = 900   # 15 minutes
+REFERRAL_PERCENT      = 25    # % of numeric_price credited to referrer
+
+# Image shown on the payment method picker screen — replace with your own banner URL.
+PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
@@ -22,6 +25,14 @@ dp  = Dispatcher()
 
 async def _auto_delete(chat_id: int, message_id: int, delay: int):
     await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def _safe_delete(chat_id: int, message_id: int):
+    """Delete a message immediately, ignoring errors (already deleted, etc.)."""
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception:
@@ -128,7 +139,6 @@ async def show_refer_and_pay(callback: types.CallbackQuery):
     course_id = callback.data.split("_", 1)[1]
     user_id   = callback.from_user.id
 
-    # Re-fetch course so we can show the price
     res = supabase.table("courses").select("title, price, numeric_price").eq("course_id", course_id).execute()
     if not res.data:
         return await callback.answer("Course not found.", show_alert=True)
@@ -142,10 +152,12 @@ async def show_refer_and_pay(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="⬅️  Back to Payment Options", callback_data=f"buy_{course_id}")]
     ])
 
-    await callback.message.edit_caption(
+    await _safe_delete(callback.message.chat.id, callback.message.message_id)
+    sent = await bot.send_photo(
+        chat_id=user_id,
+        photo=PAYMENT_OPTIONS_IMAGE,
         caption=(
             f"🎁 *Refer & Pay — Earn While You Buy!*\n\n"
-
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💡 *How it works:*\n"
             f"1️⃣  Share your referral link (from @{BOT1_USERNAME})\n"
@@ -153,55 +165,33 @@ async def show_refer_and_pay(callback: types.CallbackQuery):
             f"3️⃣  You earn *{REFERRAL_PERCENT}%* of their purchase as wallet credits\n"
             f"4️⃣  Use those credits to pay for your own course!\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
-
             f"📘 *This course:* {course['title']}\n"
             f"💵 *Price:* {course['price']}\n"
             f"🎯 *You'd earn ₹{earn_amount:.2f}* for each friend who buys this course\n\n"
-
             f"💰 *Your current wallet balance:* ₹{wallet:.2f}\n\n"
-
             f"👉 To get your referral link or check your wallet balance,\n"
             f"open @{BOT1_USERNAME} and tap *💼 /wallet*"
         ),
         reply_markup=back_kb,
         parse_mode="Markdown"
     )
+    asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
     await callback.answer()
 
 
-# ── Back to course landing ─────────────────────────────────────────────────────
+# ── Back to course landing — just delete the payment message ──────────────────
+# The course details message was never touched, so it's still visible above.
 
 @dp.callback_query(F.data.startswith("back_course_"))
 async def back_to_course(callback: types.CallbackQuery):
-    course_id = callback.data.split("back_course_", 1)[1]
-    user_id   = callback.from_user.id
-
-    res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
-    if not res.data:
-        return await callback.answer("Course not found.", show_alert=True)
-
-    course = res.data[0]
-    wallet = _get_wallet(user_id)
-
-    await callback.message.edit_caption(
-        caption=(
-            f"📘 *{course['title']}*\n\n"
-            f"{course['bot2_text']}\n\n"
-            f"💵 *Price:* {course['price']}\n\n"
-            f"⏱ _This payment window closes in 15 minutes._"
-        ),
-        reply_markup=_build_course_keyboard(course_id, wallet),
-        parse_mode="Markdown"
-    )
+    await _safe_delete(callback.message.chat.id, callback.message.message_id)
     await callback.answer()
 
 
 # ── STEP 1.5a: Payment method picker ──────────────────────────────────────────
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def show_payment_methods(callback: types.CallbackQuery):
-    course_id = callback.data.split("buy_", 1)[1]
-
+async def _send_payment_options(chat_id: int, course_id: str):
+    """Send the payment options message as a fresh photo message."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📷  QR Code",          callback_data=f"pay_qr_{course_id}")],
         [InlineKeyboardButton(text="🟣  Paytm / UPI",      callback_data=f"pay_paytm_{course_id}")],
@@ -211,7 +201,9 @@ async def show_payment_methods(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🎁  Refer & Pay",      callback_data=f"referpay_{course_id}")],
         [InlineKeyboardButton(text="⬅️  Back to Course",   callback_data=f"back_course_{course_id}")],
     ])
-    await callback.message.edit_caption(
+    sent = await bot.send_photo(
+        chat_id=chat_id,
+        photo=PAYMENT_OPTIONS_IMAGE,
         caption=(
             "🏦 *Choose a Payment Method*\n\n"
             "Select how you'd like to pay below.\n"
@@ -221,6 +213,14 @@ async def show_payment_methods(callback: types.CallbackQuery):
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
+    asyncio.create_task(_auto_delete(chat_id, sent.message_id, AUTO_DELETE_SECS))
+
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def show_payment_methods(callback: types.CallbackQuery):
+    course_id = callback.data.split("buy_", 1)[1]
+    await _safe_delete(callback.message.chat.id, callback.message.message_id)
+    await _send_payment_options(callback.from_user.id, course_id)
     await callback.answer()
 
 
@@ -303,7 +303,10 @@ async def use_wallet(callback: types.CallbackQuery):
         back_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"back_course_{course_id}")]
         ])
-        await callback.message.edit_caption(
+        await _safe_delete(callback.message.chat.id, callback.message.message_id)
+        sent = await bot.send_photo(
+            chat_id=user_id,
+            photo=PAYMENT_OPTIONS_IMAGE,
             caption=(
                 f"💰 *Wallet Discount Applied!*\n\n"
                 f"┌ 🎫 Wallet credit used:   *₹{discount:.2f}*\n"
@@ -315,6 +318,7 @@ async def use_wallet(callback: types.CallbackQuery):
             reply_markup=back_kb,
             parse_mode="Markdown"
         )
+        asyncio.create_task(_auto_delete(user_id, sent.message_id, AUTO_DELETE_SECS))
 
     await callback.answer()
 
@@ -339,7 +343,7 @@ PAYMENT_METHODS = {
             "📸 *Once paid:* send your payment screenshot right here in this chat.\n\n"
             "⏱ _This window closes in 15 minutes._"
         ),
-        "image": "https://i.ibb.co/Gf4dxt28/bdb68f4ab32e.jpg",
+        "image": "https://i.ibb.co/99kR2HsK/x.jpg",
     },
     "paypal": {
         "text":  (
@@ -376,23 +380,27 @@ PAYMENT_METHODS = {
 @dp.callback_query(F.data.startswith("pay_"))
 async def show_payment_details(callback: types.CallbackQuery):
     # Format: pay_METHOD_COURSEID
-    parts  = callback.data.split("_", 2)   # ["pay", "METHOD", "course_id"]
-    method = parts[1] if len(parts) > 1 else ""
+    parts     = callback.data.split("_", 2)   # ["pay", "METHOD", "course_id"]
+    method    = parts[1] if len(parts) > 1 else ""
     course_id = parts[2] if len(parts) > 2 else ""
 
     info = PAYMENT_METHODS.get(method)
     if not info:
         return await callback.answer("Unknown payment method.", show_alert=True)
 
-    back_row    = [InlineKeyboardButton(text="⬅️  Back to Payment Options", callback_data=f"buy_{course_id}")]
-    extra       = info.get("extra_buttons", [])
-    all_rows    = extra + [back_row]
-    keyboard    = InlineKeyboardMarkup(inline_keyboard=all_rows)
+    back_row = [InlineKeyboardButton(text="⬅️  Back to Payment Options", callback_data=f"buy_{course_id}")]
+    extra    = info.get("extra_buttons", [])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=extra + [back_row])
 
-    await callback.message.edit_media(
-        media=InputMediaPhoto(media=info["image"], caption=info["text"], parse_mode="Markdown"),
-        reply_markup=keyboard
+    await _safe_delete(callback.message.chat.id, callback.message.message_id)
+    sent = await bot.send_photo(
+        chat_id=callback.from_user.id,
+        photo=info["image"],
+        caption=info["text"],
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
+    asyncio.create_task(_auto_delete(callback.from_user.id, sent.message_id, AUTO_DELETE_SECS))
     await callback.answer()
 
 
