@@ -66,9 +66,12 @@ def _add_wallet(user_id: int, amount: float):
         }).execute()
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
+    """
+    FIX: Strict >= balance check. No floating-point tolerance that could allow
+    a user with ₹0.00 to deduct ₹0.02 due to the old (amount - 0.02) trick.
+    """
     current = _get_wallet(user_id)
-    # Safe floating point comparison (-0.02 tolerance)
-    if current < (amount - 0.02):
+    if current < amount:
         return False
     new_balance = max(0.0, round(current - amount, 2))
     supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
@@ -141,24 +144,27 @@ async def handle_start(message: types.Message, command: CommandObject):
 
     _ensure_user(user_id, username)
 
+    # FIX: Validate referrer_id exists in DB before recording referral.
+    # Prevents phantom referrer IDs (manually crafted deep links with fake IDs).
     if referrer_id and referrer_id != user_id:
-        existing_ref = supabase.table("referrals").select("id").eq("referred_user_id", user_id).execute()
-        if not existing_ref.data:
-            _ensure_user(referrer_id)
-            supabase.table("referrals").insert({
-                "referrer_id":      referrer_id,
-                "referred_user_id": user_id,
-                "status":           "joined"
-            }).execute()
-            try:
-                await bot.send_message(
-                    referrer_id,
-                    "🎉 *Someone just joined using your referral link!*\n\n"
-                    f"You'll earn *{REFERRAL_PERCENT}%* wallet credit the moment they make a purchase. 💸",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+        referrer_exists = supabase.table("users").select("telegram_user_id").eq("telegram_user_id", referrer_id).execute()
+        if referrer_exists.data:
+            existing_ref = supabase.table("referrals").select("id").eq("referred_user_id", user_id).execute()
+            if not existing_ref.data:
+                supabase.table("referrals").insert({
+                    "referrer_id":      referrer_id,
+                    "referred_user_id": user_id,
+                    "status":           "joined"
+                }).execute()
+                try:
+                    await bot.send_message(
+                        referrer_id,
+                        "🎉 *Someone just joined using your referral link!*\n\n"
+                        f"You'll earn *{REFERRAL_PERCENT}%* wallet credit the moment they make a purchase. 💸",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
 
     courses = supabase.table("courses").select("course_id, title").execute().data
     builder = InlineKeyboardBuilder()
@@ -394,7 +400,9 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
     status_msg = await message.answer("⏳ Collecting user list…")
 
-    rows         = supabase.table("transactions").select("telegram_user_id").execute().data
+    # FIX: Broadcast to ALL users (not just those who have transactions),
+    # so new users who haven't purchased yet still receive announcements.
+    rows         = supabase.table("users").select("telegram_user_id").execute().data
     unique_users = {r["telegram_user_id"] for r in rows}
 
     success = fail = 0
@@ -405,7 +413,11 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
             await asyncio.sleep(0.05)
         except TelegramForbiddenError:
             fail += 1
+            # FIX: Clean up ALL tables when a blocked/dead user is detected,
+            # not just transactions — prevents stale data in users and referrals.
             supabase.table("transactions").delete().eq("telegram_user_id", uid).execute()
+            supabase.table("referrals").delete().eq("referred_user_id", uid).execute()
+            supabase.table("users").delete().eq("telegram_user_id", uid).execute()
         except Exception:
             fail += 1
 
