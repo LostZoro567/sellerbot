@@ -592,6 +592,14 @@ async def admin_decision(callback: types.CallbackQuery):
     course_id   = transaction["course_id"]
     wallet_used = float(transaction.get("wallet_used", 0))
 
+    # Rebuild the original caption safely with code blocks to prevent Markdown errors
+    wallet_note = f"\n💰 *Wallet credit used:* ₹{wallet_used:.2f}" if wallet_used > 0 else ""
+    safe_caption = (
+        f"💳 *New Payment Screenshot*\n\n"
+        f"👤 User ID: `{user_id}`\n"
+        f"📘 Course: `{course_id}`{wallet_note}"
+    )
+
     if action == "approve":
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
@@ -639,7 +647,7 @@ async def admin_decision(callback: types.CallbackQuery):
                 pass
 
         await callback.message.edit_caption(
-            caption=f"{callback.message.caption}\n\n✅ *APPROVED & DELIVERED*",
+            caption=f"{safe_caption}\n\n✅ *APPROVED & DELIVERED*",
             parse_mode="Markdown"
         )
 
@@ -654,12 +662,11 @@ async def admin_decision(callback: types.CallbackQuery):
             parse_mode="Markdown"
         )
         await callback.message.edit_caption(
-            caption=f"{callback.message.caption}\n\n❌ *REJECTED*",
+            caption=f"{safe_caption}\n\n❌ *REJECTED*",
             parse_mode="Markdown"
         )
 
     await callback.answer()
-
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
