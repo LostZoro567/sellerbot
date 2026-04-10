@@ -24,22 +24,23 @@ BUNDLE_DELIVERY_TEXT  = (
     "_Check each pinned link for access._"
 )
 
-# ── Discounts list ────────────────────────────────────────────────────────────
+# ── CHANGE THIS LINK: This is the main image shown when picking a payment method 
+PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg" # <-- Replace with your real Payment Options Image
+
+# ── Interactive Discounts list ────────────────────────────────────────────────
 DISCOUNTS = [
     {
-        "label": "📚 Buy All Courses — ₹1,499 / $22",
+        "id": BUNDLE_COURSE_ID,
+        "button_text": "🛒 Buy Full Collection — ₹1,499 / $22",
         "detail": (
             "🔥 *Full Collection Bundle*\n\n"
             "Get *every course* we offer at a massive discount!\n\n"
             "₹ *India:* ₹1,499 (instead of paying per course)\n"
-            "🌍 *International:* $22\n\n"
-            "Tap *Buy Now* on any course and select a payment method — "
-            "you'll be offered this bundle automatically."
+            "🌍 *International:* $22"
         ),
     },
+    # To add more bundles, add them here using the same format!
 ]
-
-PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/bMP4nQ7S/ee15c8361b23.jpg"
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
@@ -156,23 +157,27 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     )
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id, AUTO_DELETE_SECS))
 
+
+# ── NEW: Interactive Discounts Menu ────────────────────────────────────────────
+
 @dp.callback_query(F.data.startswith("discounts:"))
 async def show_discounts(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
 
     if not DISCOUNTS:
-        return await callback.answer(
-            "🚧 No active discounts right now. Check back soon!",
-            show_alert=True
-        )
+        return await callback.answer("🚧 No active discounts right now.", show_alert=True)
 
-    lines = ["🏷 *Available Discounts*\n"]
+    lines = ["🏷 *Available Discounts & Bundles*\n"]
+    rows = []
+    
     for i, d in enumerate(DISCOUNTS, 1):
         lines.append(f"{i}. {d['detail']}\n")
+        # Generate a Buy button specifically for this bundle
+        rows.append([InlineKeyboardButton(text=d["button_text"], callback_data=f"buy:{d['id']}")])
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")]
-    ])
+    rows.append([InlineKeyboardButton(text="⬅️  Back to Course", callback_data=f"backcourse:{course_id}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     await callback.message.edit_caption(
         caption="\n".join(lines),
@@ -180,6 +185,7 @@ async def show_discounts(callback: types.CallbackQuery):
         parse_mode="Markdown"
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("backcourse:"))
 async def back_to_course(callback: types.CallbackQuery):
@@ -216,20 +222,24 @@ async def show_payment_methods(callback: types.CallbackQuery):
     res = supabase.table("courses").select("price").eq("course_id", course_id).execute()
     price_display = res.data[0]["price"] if res.data else "?"
 
-    sent = await bot.send_photo(
-        chat_id=callback.from_user.id,
-        photo=PAYMENT_OPTIONS_IMAGE,
-        caption=(
-            "🏦 *Choose a Payment Method*\n\n"
-            f"💵 *Your price:* {price_display}\n\n"
-            "Select how you'd like to pay below.\n"
-            "After paying, send your payment screenshot here.\n\n"
-            "⏳ _This window closes in 15 minutes._"
-        ),
-        reply_markup=_build_payment_options_keyboard(course_id),
-        parse_mode="Markdown"
-    )
-    asyncio.create_task(_auto_delete(callback.from_user.id, sent.message_id, AUTO_DELETE_SECS))
+    try:
+        sent = await bot.send_photo(
+            chat_id=callback.from_user.id,
+            photo=PAYMENT_OPTIONS_IMAGE,
+            caption=(
+                "🏦 *Choose a Payment Method*\n\n"
+                f"💵 *Your price:* {price_display}\n\n"
+                "Select how you'd like to pay below.\n"
+                "After paying, send your payment screenshot here.\n\n"
+                "⏳ _This window closes in 15 minutes._"
+            ),
+            reply_markup=_build_payment_options_keyboard(course_id),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(_auto_delete(callback.from_user.id, sent.message_id, AUTO_DELETE_SECS))
+    except Exception as e:
+        await callback.answer("⚠️ General Payment Image link is broken in the code. Update PAYMENT_OPTIONS_IMAGE.", show_alert=True)
+    
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("backpay:"))
@@ -242,20 +252,23 @@ async def back_to_payment_options(callback: types.CallbackQuery):
         res = supabase.table("courses").select("price").eq("course_id", course_id).execute()
         price_display = res.data[0]["price"] if res.data else "?"
 
-    await callback.message.edit_media(
-        media=InputMediaPhoto(
-            media=PAYMENT_OPTIONS_IMAGE,
-            caption=(
-                "🏦 *Choose a Payment Method*\n\n"
-                f"💵 *Your price:* {price_display}\n\n"
-                "Select how you'd like to pay below.\n"
-                "After paying, send your payment screenshot here.\n\n"
-                "⏳ _This window closes in 15 minutes._"
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=PAYMENT_OPTIONS_IMAGE,
+                caption=(
+                    "🏦 *Choose a Payment Method*\n\n"
+                    f"💵 *Your price:* {price_display}\n\n"
+                    "Select how you'd like to pay below.\n"
+                    "After paying, send your payment screenshot here.\n\n"
+                    "⏳ _This window closes in 15 minutes._"
+                ),
+                parse_mode="Markdown"
             ),
-            parse_mode="Markdown"
-        ),
-        reply_markup=_build_payment_options_keyboard(course_id)
-    )
+            reply_markup=_build_payment_options_keyboard(course_id)
+        )
+    except Exception:
+        pass
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("pay:"))
@@ -359,7 +372,8 @@ PAYMENT_METHODS = {
             "📸 *Once paid:* send your payment screenshot right here.\n\n"
             "⏳ _Window closes in 15 minutes._"
         ),
-        "image": "https://i.ibb.co/T5X40Ys/2a024034c5aa.jpg",
+        # ⚠️ Check this link! If it's dead, the Crypto button will fail.
+        "image": "https://i.ibb.co/T5X40Ys/2a024034c5aa.jpg", 
     },
     "others": {
         "text": (
@@ -391,10 +405,16 @@ async def _show_payment_detail(callback: types.CallbackQuery, method: str, cours
     extra    = info.get("extra_buttons", [])
     keyboard = InlineKeyboardMarkup(inline_keyboard=extra + [back_row])
 
-    await callback.message.edit_media(
-        media=InputMediaPhoto(media=info["image"], caption=caption, parse_mode="Markdown"),
-        reply_markup=keyboard
-    )
+    # Saftey check added here so a dead image link doesn't freeze the bot
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(media=info["image"], caption=caption, parse_mode="Markdown"),
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        await callback.answer(f"⚠️ The image link for {method.upper()} is broken. Please update it in the code.", show_alert=True)
+        print(f"Image Error: {e}")
+        
     await callback.answer()
 
 
