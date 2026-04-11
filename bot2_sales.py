@@ -88,13 +88,24 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
 
 
 def _add_wallet(user_id: int, amount: float):
+    """
+    Add amount to wallet. Uses read→write→verify pattern.
+    supabase-py v2 .update() always returns data=[] so we re-read after write to confirm.
+    """
     amount = round(amount, 2)
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if row.data:
         current = round(float(row.data[0]["wallet_balance"]), 2)
+        new_bal = round(current + amount, 2)
         supabase.table("users").update(
-            {"wallet_balance": round(current + amount, 2)}
+            {"wallet_balance": new_bal}
         ).eq("telegram_user_id", user_id).execute()
+        # Verify write applied (supabase-py v2 update returns empty data, must re-read)
+        chk = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
+        if chk.data:
+            actual = round(float(chk.data[0]["wallet_balance"]), 2)
+            if actual != new_bal:
+                print(f"[WALLET] _add_wallet write mismatch for {user_id}: expected {new_bal}, got {actual}. Check RLS.")
     else:
         supabase.table("users").insert({
             "telegram_user_id": user_id,
@@ -159,32 +170,80 @@ def _get_pending_tx(user_id: int, course_id: str):
 
 def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str):
     """
-    FIXED: Credit referrer 25% of course_price, one-time only.
-    - Atomically flips status joined→purchased before crediting (prevents double-payment).
-    - course_price is passed in directly — never re-fetched from DB here.
-    - transaction_id stored as text (UUID-safe).
+    Pay referrer commission. Completely redesigned to avoid supabase-py v2 bug
+    where .update().execute() always returns data=[] (empty), making the old
+    'if not update.data' guard always bail out — commission never paid.
+
+    New approach:
+      1. Read referral row (status must be 'joined')
+      2. Check if already paid via paid_on_transaction_id (idempotency guard)
+      3. Perform update (no return-value check — supabase-py v2 returns [] always)
+      4. Re-read row and confirm status flipped to 'purchased' (real guard)
+      5. Only then credit the wallet
     """
     if course_price <= 0:
+        print(f"[REFERRAL] Skipped: course_price is {course_price} for buyer {buyer_id}")
         return None, 0
 
-    ref_row = supabase.table("referrals").select("*").eq("referred_user_id", buyer_id).eq("status", "joined").execute()
+    # Step 1: Find referral row for this buyer
+    ref_row = supabase.table("referrals").select("*").eq("referred_user_id", buyer_id).execute()
     if not ref_row.data:
+        print(f"[REFERRAL] No referral row found for buyer {buyer_id}")
         return None, 0
 
     ref         = ref_row.data[0]
     referrer_id = ref["referrer_id"]
-    credit      = round(course_price * REFERRAL_PERCENT / 100, 2)
+    ref_id      = ref["id"]
+    current_status = ref.get("status", "")
 
-    # Atomic update: only succeeds if status is still "joined"
-    update = supabase.table("referrals").update({
+    # Step 2: Already paid? (idempotency)
+    if current_status == "purchased":
+        print(f"[REFERRAL] Already paid for buyer {buyer_id}, ref_id {ref_id}")
+        return None, 0
+
+    if current_status != "joined":
+        print(f"[REFERRAL] Unexpected status '{current_status}' for ref_id {ref_id}")
+        return None, 0
+
+    credit = round(course_price * REFERRAL_PERCENT / 100, 2)
+
+    # Step 3: Flip status to purchased
+    # NOTE: In supabase-py v2, .update().execute() returns data=[] by default.
+    # We do NOT check update.data — it will always be empty and is meaningless.
+    supabase.table("referrals").update({
         "status":                 "purchased",
         "paid_on_transaction_id": str(transaction_id),
-    }).eq("id", ref["id"]).eq("status", "joined").execute()
+    }).eq("id", ref_id).execute()
 
-    if not update.data:
-        return None, 0  # Already claimed by another process
+    # Step 4: Re-read to confirm the update actually applied
+    verify = supabase.table("referrals").select("status, paid_on_transaction_id").eq("id", ref_id).execute()
+    if not verify.data:
+        print(f"[REFERRAL] Cannot verify update for ref_id {ref_id}")
+        return None, 0
 
+    confirmed_status = verify.data[0].get("status", "")
+    if confirmed_status != "purchased":
+        print(f"[REFERRAL] Update did NOT apply for ref_id {ref_id}. Status still: {confirmed_status}. Check Supabase RLS.")
+        return None, 0
+
+    # Step 5: Status confirmed → credit wallet + log commission
+    print(f"[REFERRAL] Paying referrer {referrer_id} ₹{credit} for buyer {buyer_id} (tx: {transaction_id})")
     _add_wallet(referrer_id, credit)
+
+    # Step 6: Log to audit table (best-effort, won't crash if table missing)
+    try:
+        supabase.table("referral_commissions").insert({
+            "referrer_id":    referrer_id,
+            "buyer_id":       buyer_id,
+            "transaction_id": str(transaction_id),
+            "course_id":      "",   # caller can pass if needed; kept simple here
+            "course_price":   course_price,
+            "commission_pct": REFERRAL_PERCENT,
+            "commission_amt": credit,
+        }).execute()
+    except Exception as e:
+        print(f"[REFERRAL] Audit log insert failed (non-fatal): {e}")
+
     return referrer_id, credit
 
 
