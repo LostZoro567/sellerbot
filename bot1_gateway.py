@@ -33,6 +33,15 @@ class AddCourseFSM(StatesGroup):
     waiting_for_bot2_image       = State()
     waiting_for_delivery_content = State()
 
+class AddBundleFSM(StatesGroup):
+    waiting_for_bundle_id        = State()
+    waiting_for_title            = State()
+    waiting_for_price_inr        = State()
+    waiting_for_price_usd        = State()
+    waiting_for_bot2_text        = State()
+    waiting_for_bot2_image       = State()
+    waiting_for_delivery_content = State()
+
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
 
@@ -50,26 +59,6 @@ def _ensure_user(user_id: int, username=None):
 def _get_wallet(user_id: int) -> float:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     return float(row.data[0]["wallet_balance"]) if row.data else 0.0
-
-def _add_wallet(user_id: int, amount: float):
-    row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
-    if row.data:
-        current = float(row.data[0]["wallet_balance"])
-        supabase.table("users").update({"wallet_balance": round(current + amount, 2)}).eq("telegram_user_id", user_id).execute()
-    else:
-        supabase.table("users").insert({
-            "telegram_user_id": user_id,
-            "username": "",
-            "wallet_balance": round(amount, 2)
-        }).execute()
-
-def _deduct_wallet(user_id: int, amount: float) -> bool:
-    current = _get_wallet(user_id)
-    if current < amount:
-        return False
-    new_balance = max(0.0, round(current - amount, 2))
-    supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
-    return True
 
 async def _send_referral_info(user_id: int, username, target: types.Message):
     _ensure_user(user_id, username)
@@ -154,17 +143,17 @@ async def handle_start(message: types.Message, command: CommandObject):
                 except Exception:
                     pass
 
-    courses = supabase.table("courses").select("course_id, title").execute().data
+    all_items = supabase.table("courses").select("course_id, title").execute().data
+    regular_courses = [c for c in all_items if not c["course_id"].startswith("bundle_")]
+
     builder = InlineKeyboardBuilder()
     
-    # Render all individual courses
-    for c in courses:
+    for c in regular_courses:
         builder.row(InlineKeyboardButton(
             text=f"📘 {c['title']}",
             url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
         ))
 
-    # Pinned Bundles Menu Button
     builder.row(InlineKeyboardButton(
         text="🎁 View Special Discounted Bundles",
         callback_data="show_bundles_menu"
@@ -185,12 +174,20 @@ async def handle_start(message: types.Message, command: CommandObject):
 
 @dp.callback_query(F.data == "show_bundles_menu")
 async def menu_show_bundles(callback: types.CallbackQuery):
+    all_items = supabase.table("courses").select("course_id, title").execute().data
+    bundles = [c for c in all_items if c["course_id"].startswith("bundle_")]
+
     builder = InlineKeyboardBuilder()
     
-    # Configure your bundle deep links here
-    builder.row(InlineKeyboardButton(text="📦 Combo: Course 1 + Course 2", url=f"https://t.me/{BOT2_USERNAME}?start=bundle_1_2"))
-    builder.row(InlineKeyboardButton(text="📦 Combo: Course 4 + Course 6", url=f"https://t.me/{BOT2_USERNAME}?start=bundle_4_6"))
-    builder.row(InlineKeyboardButton(text="🔥 MEGA BUNDLE: All Courses", url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"))
+    if not bundles:
+        builder.row(InlineKeyboardButton(text="No bundles available right now", callback_data="ignore"))
+    else:
+        for b in bundles:
+            builder.row(InlineKeyboardButton(
+                text=f"📦 {b['title']}", 
+                url=f"https://t.me/{BOT2_USERNAME}?start={b['course_id']}"
+            ))
+
     builder.row(InlineKeyboardButton(text="⬅️ Back to All Courses", callback_data="back_to_main_menu"))
 
     await callback.message.edit_caption(
@@ -205,10 +202,12 @@ async def menu_show_bundles(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_main_menu")
 async def menu_back_to_main(callback: types.CallbackQuery):
-    courses = supabase.table("courses").select("course_id, title").execute().data
+    all_items = supabase.table("courses").select("course_id, title").execute().data
+    regular_courses = [c for c in all_items if not c["course_id"].startswith("bundle_")]
+
     builder = InlineKeyboardBuilder()
     
-    for c in courses:
+    for c in regular_courses:
         builder.row(InlineKeyboardButton(
             text=f"📘 {c['title']}",
             url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
@@ -288,7 +287,7 @@ async def cmd_addnew(message: types.Message, state: FSMContext):
     await message.answer(
         "🛠 <b>Add New Course — Step 1 of 7</b>\n\n"
         "Enter a unique <b>internal ID</b> for this course.\n"
-        "_(Use lowercase letters/numbers only, e.g. <code>python_basics</code>, <code>course_7</code>)_",
+        "_(Use lowercase letters/numbers only, e.g. <code>python_basics</code>)_",
         parse_mode="HTML"
     )
     await state.set_state(AddCourseFSM.waiting_for_course_id)
@@ -299,7 +298,7 @@ async def process_course_id(message: types.Message, state: FSMContext):
     await message.answer(
         "✅ ID saved!\n\n"
         "🛠 <b>Step 2 of 7 — Display Title</b>\n\n"
-        "Enter the title users will see.\n_(e.g. <code>Master Python 2024</code>)_",
+        "Enter the title users will see.",
         parse_mode="HTML"
     )
     await state.set_state(AddCourseFSM.waiting_for_title)
@@ -320,15 +319,12 @@ async def process_price_inr(message: types.Message, state: FSMContext):
     try:
         numeric = float(message.text.strip().replace("₹", "").replace(",", ""))
     except ValueError:
-        return await message.answer(
-            "❌ That doesn't look like a number. Please enter something like <code>400</code>.",
-            parse_mode="HTML"
-        )
+        return await message.answer("❌ That doesn't look like a number. Please enter something like <code>400</code>.", parse_mode="HTML")
     await state.update_data(numeric_price=numeric)
     await message.answer(
         "✅ INR Price saved!\n\n"
         "🛠 <b>Step 4 of 7 — Price (USD)</b>\n\n"
-        "Enter the price in <b>$</b> as a plain number. I will combine this with INR for the display price.\n_(e.g. <code>15</code>)_",
+        "Enter the price in <b>$</b> as a plain number.",
         parse_mode="HTML"
     )
     await state.set_state(AddCourseFSM.waiting_for_price_usd)
@@ -338,10 +334,7 @@ async def process_price_usd(message: types.Message, state: FSMContext):
     try:
         usd_val = float(message.text.strip().replace("$", "").replace(",", ""))
     except ValueError:
-        return await message.answer(
-            "❌ That doesn't look like a number. Please enter something like <code>15</code>.",
-            parse_mode="HTML"
-        )
+        return await message.answer("❌ That doesn't look like a number.", parse_mode="HTML")
     
     data = await state.get_data()
     numeric_inr = data.get("numeric_price", 0)
@@ -352,7 +345,7 @@ async def process_price_usd(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ Display price saved as: <b>{display_price}</b>\n\n"
         "🛠 <b>Step 5 of 7 — Sales Description</b>\n\n"
-        "Enter the sales text Bot 2 will show buyers when they view this course:",
+        "Enter the sales text Bot 2 will show buyers:",
         parse_mode="HTML"
     )
     await state.set_state(AddCourseFSM.waiting_for_bot2_text)
@@ -363,8 +356,7 @@ async def process_bot2_text(message: types.Message, state: FSMContext):
     await message.answer(
         "✅ Description saved!\n\n"
         "🛠 <b>Step 6 of 7 — Course Thumbnail URL</b>\n\n"
-        "Paste a public image URL for the course thumbnail.\n"
-        "<i>(e.g. <code>https://telegra.ph/file/abc.jpg</code>)</i>",
+        "Paste a public image URL for the course thumbnail.",
         parse_mode="HTML"
     )
     await state.set_state(AddCourseFSM.waiting_for_bot2_image)
@@ -376,7 +368,7 @@ async def process_bot2_image(message: types.Message, state: FSMContext):
         "✅ Thumbnail saved!\n\n"
         "🛠 <b>Step 7 of 7 — Course Delivery Content</b>\n\n"
         "Send what the buyer receives after payment:\n\n"
-        "• A <b>text message</b> (e.g. Google Drive links, passwords, notes)\n"
+        "• A <b>text message</b> (e.g. Drive links)\n"
         "• Or a <b>file</b> (<code>.zip</code>, <code>.pdf</code>) with an optional caption",
         parse_mode="HTML"
     )
@@ -407,7 +399,130 @@ async def process_delivery_content(message: types.Message, state: FSMContext):
         }).execute()
         await message.answer(
             "🎉 <b>Course Added Successfully!</b>\n\n"
-            f"📘 <b>{data['title']}</b> is now live and ready to sell.",
+            f"📘 <b>{data['title']}</b> is now live.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ <b>Database error:</b>\n\n<code>{e}</code>", parse_mode="HTML")
+
+    await state.clear()
+
+# ── ADMIN: /addbundle ───────────────────────────────────────────────────────────
+
+@dp.message(Command("addbundle"))
+async def cmd_addbundle(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "🛠 <b>Add New Bundle — Step 1 of 7</b>\n\n"
+        "Enter a unique <b>internal ID</b> for this bundle.\n"
+        "_(I will automatically add 'bundle_' to the front of whatever you type here.)_",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddBundleFSM.waiting_for_bundle_id)
+
+@dp.message(AddBundleFSM.waiting_for_bundle_id)
+async def process_bundle_id(message: types.Message, state: FSMContext):
+    raw_id = message.text.strip().lower().replace(" ", "_")
+    bundle_id = raw_id if raw_id.startswith("bundle_") else f"bundle_{raw_id}"
+    
+    await state.update_data(course_id=bundle_id)
+    await message.answer(
+        f"✅ ID saved as: <code>{bundle_id}</code>\n\n"
+        "🛠 <b>Step 2 of 7 — Display Title</b>\n\n"
+        "Enter the title users will see.\n_(e.g. <code>Mega Pack: Python + SQL</code>)_",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddBundleFSM.waiting_for_title)
+
+@dp.message(AddBundleFSM.waiting_for_title)
+async def process_bundle_title(message: types.Message, state: FSMContext):
+    await state.update_data(title=message.text.strip())
+    await message.answer(
+        "✅ Title saved!\n\n"
+        "🛠 <b>Step 3 of 7 — Price (INR)</b>\n\n"
+        "Enter the bundle price in <b>₹</b> as a plain number.",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddBundleFSM.waiting_for_price_inr)
+
+@dp.message(AddBundleFSM.waiting_for_price_inr)
+async def process_bundle_price_inr(message: types.Message, state: FSMContext):
+    try:
+        numeric = float(message.text.strip().replace("₹", "").replace(",", ""))
+    except ValueError:
+        return await message.answer("❌ Please enter a valid number.", parse_mode="HTML")
+        
+    await state.update_data(numeric_price=numeric)
+    await message.answer("✅ INR Price saved!\n\n🛠 <b>Step 4 of 7 — Price (USD)</b>\nEnter the price in <b>$</b>.", parse_mode="HTML")
+    await state.set_state(AddBundleFSM.waiting_for_price_usd)
+
+@dp.message(AddBundleFSM.waiting_for_price_usd)
+async def process_bundle_price_usd(message: types.Message, state: FSMContext):
+    try:
+        usd_val = float(message.text.strip().replace("$", "").replace(",", ""))
+    except ValueError:
+        return await message.answer("❌ Please enter a valid number.", parse_mode="HTML")
+    
+    data = await state.get_data()
+    display_price = f"₹{data['numeric_price']:g} / ${usd_val:g}"
+    await state.update_data(price=display_price)
+    
+    await message.answer(
+        f"✅ Price saved as: <b>{display_price}</b>\n\n"
+        "🛠 <b>Step 5 of 7 — Sales Description</b>\n\n"
+        "Enter the bundle text description for the sales bot:",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddBundleFSM.waiting_for_bot2_text)
+
+@dp.message(AddBundleFSM.waiting_for_bot2_text)
+async def process_bundle_bot2_text(message: types.Message, state: FSMContext):
+    await state.update_data(bot2_text=message.text.strip())
+    await message.answer(
+        "✅ Description saved!\n\n"
+        "🛠 <b>Step 6 of 7 — Bundle Thumbnail URL</b>\n\n"
+        "Paste a public image URL for the bundle thumbnail.",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddBundleFSM.waiting_for_bot2_image)
+
+@dp.message(AddBundleFSM.waiting_for_bot2_image)
+async def process_bundle_bot2_image(message: types.Message, state: FSMContext):
+    await state.update_data(bot2_image_id=message.text.strip())
+    await message.answer(
+        "✅ Thumbnail saved!\n\n"
+        "🛠 <b>Step 7 of 7 — Bundle Delivery Content</b>\n\n"
+        "Send what the buyer receives after payment (zip file, text links, etc.):",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddBundleFSM.waiting_for_delivery_content)
+
+@dp.message(AddBundleFSM.waiting_for_delivery_content)
+async def process_bundle_delivery_content(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    delivery_text = message.text or message.caption or "✅ Payment verified! Here is your bundle."
+    delivery_file_id = None
+
+    if message.document:
+        delivery_file_id = message.document.file_id
+    elif message.video:
+        delivery_file_id = message.video.file_id
+
+    try:
+        supabase.table("courses").insert({
+            "course_id":        data["course_id"],
+            "title":            data["title"],
+            "price":            data["price"],
+            "numeric_price":    data["numeric_price"],
+            "bot2_text":        data["bot2_text"],
+            "bot2_image_id":    data["bot2_image_id"],
+            "delivery_text":    delivery_text,
+            "delivery_file_id": delivery_file_id,
+        }).execute()
+        await message.answer(
+            "🎉 <b>Bundle Added Successfully!</b>\n\n"
+            f"📦 <b>{data['title']}</b> is now live.",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -476,7 +591,7 @@ async def cmd_stats(message: types.Message):
         "📊 <b>Bot Statistics</b>\n\n"
         f"👥 Total Users:          <b>{total_users}</b>\n"
         f"✅ Approved Sales:       <b>{total_sales}</b>\n"
-        f"📚 Courses Available:    <b>{total_courses}</b>\n"
+        f"📚 Courses/Bundles:      <b>{total_courses}</b>\n"
         f"🔗 Total Referrals:      <b>{total_refs}</b>\n"
         f"💰 Referrals → Purchase: <b>{paid_refs}</b>",
         parse_mode="HTML"
@@ -485,7 +600,6 @@ async def cmd_stats(message: types.Message):
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    print("✅ Gateway Bot starting…")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
