@@ -119,7 +119,7 @@ def _get_pending_tx(user_id: int, course_id: str):
     return res.data[0] if res.data else None
 
 
-def _pay_referrer(buyer_id: int, course_price: float, transaction_id: int):
+def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str):
     """
     Credit referrer 25% of course_price, one-time only.
     Atomically flips status joined->purchased before crediting to prevent
@@ -173,7 +173,7 @@ def _payment_keyboard(course_id: str) -> InlineKeyboardMarkup:
     ])
 
 
-def _admin_keyboard(trans_id: int) -> InlineKeyboardMarkup:
+def _admin_keyboard(trans_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅  Approve", callback_data=f"approve_{trans_id}"),
         InlineKeyboardButton(text="❌  Reject",  callback_data=f"reject_{trans_id}"),
@@ -672,7 +672,7 @@ async def admin_decision(callback: types.CallbackQuery):
         return await callback.answer("⛔ Unauthorized.", show_alert=True)
 
     action, trans_id_str = callback.data.split("_", 1)
-    trans_id = int(trans_id_str)
+    trans_id = trans_id_str  # UUID string, not int
 
     res = supabase.table("transactions").select("*").eq("id", trans_id).execute()
     if not res.data:
