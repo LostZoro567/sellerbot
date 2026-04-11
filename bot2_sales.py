@@ -373,6 +373,9 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     )
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id))
 
+# --- ADD THIS LINE HERE ---
+    asyncio.create_task(_recovery_notifications(user_id, course_id, course["title"]))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DISCOUNTS
