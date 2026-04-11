@@ -251,6 +251,54 @@ def _admin_keyboard(trans_id: str) -> InlineKeyboardMarkup:
 # MISC HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Add this in the MISC HELPERS section ──────────────────────────────────────
+
+async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
+    """
+    Sends follow-up messages if the user hasn't purchased after 15m and 24h.
+    These messages do NOT self-destruct.
+    """
+    # 1. Wait 16 minutes (960s) - lets the 15m sales post delete first
+    await asyncio.sleep(960) 
+    
+    # Check if they already purchased or have a pending approval
+    # This prevents bothering users who have already sent a screenshot
+    check = supabase.table("transactions").select("status").eq(
+        "telegram_user_id", user_id
+    ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
+    
+    if not check.data:
+        kb = InlineKeyboardBuilder()
+        kb.row(InlineKeyboardButton(text="💳 Resume Purchase", callback_data=f"buy:{course_id}"))
+        kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/YourAdminUsername"))
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"👋 <b>Still interested in {course_title}?</b>\n\n"
+                 "We noticed you didn't finish your checkout. If you had any trouble with the "
+                 "payment methods or have questions, feel free to reach out to our support team!",
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML"
+        )
+
+        # 2. Wait 24 hours (86400s) for the final follow-up
+        await asyncio.sleep(86400)
+        
+        # Check again - only send if they STILL haven't bought it
+        check_final = supabase.table("transactions").select("status").eq(
+            "telegram_user_id", user_id
+        ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
+        
+        if not check_final.data:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"✨ <b>Last call for {course_title}!</b>\n\n"
+                     "The private access link for this course is still available for you. "
+                     "Don't miss out on mastering these skills!",
+                reply_markup=kb.as_markup(),
+                parse_mode="HTML"
+            )
+
 async def _auto_delete(chat_id: int, message_id: int, delay: int = AUTO_DELETE_SECS):
     await asyncio.sleep(delay)
     try:
