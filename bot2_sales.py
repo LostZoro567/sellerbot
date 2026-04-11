@@ -804,7 +804,7 @@ async def admin_decision(callback: types.CallbackQuery):
         await _deliver_course(user_id, course_id)
 
         # Pay referrer — course_price already resolved above from tx.amount_paid
-        referrer_id, credit = _pay_referrer(user_id, course_price, trans_id)
+        referrer_id, credit = _pay_referrer(user_id, course_price, trans_id, course_id)
         if referrer_id:
             try:
                 await bot.send_message(
