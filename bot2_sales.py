@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from db import supabase
 
 load_dotenv()
