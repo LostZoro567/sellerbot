@@ -348,53 +348,84 @@ async def _deliver_course(user_id: int, course_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dp.message(CommandStart())
-async def handle_course_selection(message: types.Message, command: CommandObject):
-    course_id = (command.args or "").strip()
-    user_id   = message.from_user.id
+async def handle_start(message: types.Message, command: CommandObject):
+    user_id  = message.from_user.id
+    username = message.from_user.username
+    args     = command.args or ""
 
-    if not course_id:
-        return await message.answer("⚠️ Please use a valid course link to start.")
+    if args == "refer":
+        return await _send_referral_info(user_id, username, message)
 
-    # Special handling if the user selected the Mega Bundle 
-    if course_id == BUNDLE_COURSE_ID:
-        course = {
-            "title": "Full Collection Bundle",
-            "bot2_text": (
-                "🔥 <b>The Ultimate Mega Bundle</b>\n\n"
-                "Get instant access to every single course in our catalog. "
-                "This is the best value option for serious learners."
-            ),
-            "price": f"₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}",
-            "bot2_image_id": PAYMENT_OPTIONS_IMAGE, 
-            "numeric_price": BUNDLE_PRICE_INR
-        }
+    referrer_id = None
+    if "-ref-" in args:
+        code, ref_part = args.split("-ref-", 1)
+        try:
+            referrer_id = int(ref_part)
+        except ValueError:
+            referrer_id = None
     else:
-        # Standard course lookup from Supabase 
-        res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
-        if not res.data:
-            return await message.answer("❌ Course not found or the link is invalid.")
-        course = res.data[0]
+        code = args
 
-    price  = round(float(course.get("numeric_price", 0)), 2)
-    wallet = _get_wallet(user_id)
+    if code != SECRET_CODE:
+        return await message.answer(
+            "👋 <b>Welcome!</b>\n\n"
+            "You need a valid invite link to access the private catalog.\n\n"
+            "<i>Ask a friend who's already inside to share their referral link with you.</i>",
+            parse_mode="HTML"
+        )
 
-    # Clean up any existing state for this user 
-    _cancel_pending(user_id)
-    _create_transaction(user_id, course_id)
+    _ensure_user(user_id, username)
 
-    # Send the sales post 
-    sent = await message.answer_photo(
-        photo=course["bot2_image_id"],
-        caption=_course_caption(course),
-        reply_markup=_course_keyboard(course_id, wallet, price),
+    # Validate referrer_id exists in DB before recording referral.
+    if referrer_id and referrer_id != user_id:
+        referrer_exists = supabase.table("users").select("telegram_user_id").eq("telegram_user_id", referrer_id).execute()
+        if referrer_exists.data:
+            existing_ref = supabase.table("referrals").select("id").eq("referred_user_id", user_id).execute()
+            if not existing_ref.data:
+                supabase.table("referrals").insert({
+                    "referrer_id":      referrer_id,
+                    "referred_user_id": user_id,
+                    "status":           "joined"
+                }).execute()
+                try:
+                    await bot.send_message(
+                        referrer_id,
+                        "🎉 <b>Someone just joined using your referral link!</b>\n\n"
+                        f"You'll earn <b>{REFERRAL_PERCENT}%</b> wallet credit the moment they make a purchase. 💸",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+    courses = supabase.table("courses").select("course_id, title").execute().data
+    builder = InlineKeyboardBuilder()
+    
+    # 1. Add all individual courses inside the loop
+    for c in courses:
+        if c["course_id"] != "bundle_all":
+            builder.row(InlineKeyboardButton(
+                text=f"📘 {c['title']}",
+                url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
+            ))
+
+    # 2. PINNED BUNDLE BUTTON: Added strictly outside the loop
+    builder.row(InlineKeyboardButton(
+        text="🎁 Get All Courses (Mega Bundle) — Save 60%!",
+        url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
+    ))
+
+    wallet      = _get_wallet(user_id)
+    wallet_note = f"\n\n💰 <b>Wallet Balance:</b> ₹{wallet:.2f}" if wallet > 0 else ""
+
+    await message.answer_photo(
+        photo=WELCOME_PHOTO,
+        caption=(
+            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
+            f"Browse the courses below and tap one to view details & purchase.{wallet_note}"
+        ),
+        reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
-    
-    # 1. Background Task: Auto-delete the sales post after 15 minutes 
-    asyncio.create_task(_auto_delete(message.chat.id, sent.message_id))
-    
-    # 2. Background Task: Start recovery notifications (15m and 24h follow-ups) 
-    asyncio.create_task(_recovery_notifications(user_id, course_id, course["title"]))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
