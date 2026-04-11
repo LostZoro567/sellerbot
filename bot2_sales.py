@@ -142,7 +142,7 @@ def _get_pending_tx(user_id: int, course_id: str):
     return res.data[0] if res.data else None
 
 
-def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str):
+def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str, course_id: str):
     """
     Pay referrer 25% commission. Uses read-write-verify pattern.
 
@@ -203,12 +203,13 @@ def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str):
             "referrer_id":    referrer_id,
             "buyer_id":       buyer_id,
             "transaction_id": str(transaction_id),
+            "course_id":      course_id,  # Add this line
             "course_price":   course_price,
             "commission_pct": REFERRAL_PERCENT,
             "commission_amt": credit,
         }).execute()
     except Exception as e:
-        print(f"[REFERRAL] Audit log failed (non-fatal): {e}")
+        print(f"[REFERRAL] Audit log failed: {e}")
 
     return referrer_id, credit
 
