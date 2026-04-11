@@ -554,15 +554,22 @@ PAYMENT_METHODS = {
     },
 }
 
+# ── Update payment_method_intercept ──────────────────────────────────────────
+
 @dp.callback_query(F.data.startswith("pay:"))
 async def payment_method_intercept(callback: types.CallbackQuery):
     parts     = callback.data.split(":", 2)
     method    = parts[1] if len(parts) > 1 else ""
     course_id = parts[2] if len(parts) > 2 else ""
+
+    # NEW: If it's already the bundle, go straight to payment details
     if course_id == BUNDLE_COURSE_ID:
         return await _show_payment_detail(callback, method, course_id)
+
+    # For individual courses, still show the upgrade message
     res          = supabase.table("courses").select("price").eq("course_id", course_id).execute()
     single_price = res.data[0]["price"] if res.data else "?"
+    
     await callback.message.edit_media(
         media=InputMediaPhoto(
             media=PAYMENT_OPTIONS_IMAGE,
@@ -571,7 +578,6 @@ async def payment_method_intercept(callback: types.CallbackQuery):
                 f"You're about to pay <b>{single_price}</b> for one course.\n\n"
                 "📦 <b>Full Collection Bundle</b>\n"
                 f"Get <b>all our courses</b> for just <b>₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}</b>\n\n"
-                "That's every course we offer at one unbeatable price.\n\n"
                 "💬 <b>Would you like to upgrade to the full collection?</b>"
             ),
             parse_mode="HTML"
