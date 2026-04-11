@@ -53,12 +53,6 @@ def _get_wallet(user_id: int) -> float:
 
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
-    """
-    Atomically deduct amount from wallet.
-    Re-reads DB after write to confirm it actually applied
-    (Supabase silently ignores RLS-blocked writes without raising errors).
-    Returns True only when money is confirmed deducted.
-    """
     amount = round(amount, 2)
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if not row.data:
@@ -68,14 +62,11 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
         return False
     new_bal = round(current - amount, 2)
     supabase.table("users").update({"wallet_balance": new_bal}).eq("telegram_user_id", user_id).execute()
-    # Confirm the write landed
     verify = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
     if not verify.data:
         return False
     confirmed = round(float(verify.data[0]["wallet_balance"]), 2)
     if confirmed != new_bal:
-        print(f"[CRITICAL] _deduct_wallet: write did NOT apply for user {user_id}. "
-              f"Expected {new_bal}, got {confirmed}. Check Supabase RLS policies.")
         return False
     return True
 
@@ -103,7 +94,6 @@ def _cancel_pending(user_id: int):
 
 
 def _get_course_price(course_id: str) -> float:
-    """Single source of truth for numeric price. Never returns 0 for valid courses."""
     if course_id == BUNDLE_COURSE_ID:
         return float(BUNDLE_PRICE_INR)
     cr = supabase.table("courses").select("numeric_price").eq("course_id", course_id).execute()
@@ -121,9 +111,6 @@ def _get_course_title(course_id: str) -> str:
 
 
 def _create_transaction(user_id: int, course_id: str) -> str:
-    """
-    Stores amount_paid at creation time — guarantees admin sees correct price (fixes ₹0 bug).
-    """
     numeric_price = _get_course_price(course_id)
     result = supabase.table("transactions").insert({
         "telegram_user_id": user_id,
@@ -144,26 +131,11 @@ def _get_pending_tx(user_id: int, course_id: str):
 
 
 def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str, course_id: str):
-    """
-    Pay referrer 25% commission. Uses read-write-verify pattern.
-
-    ROOT CAUSE OF PREVIOUS BUG:
-    supabase-py v2 .update().execute() ALWAYS returns data=[] (empty list),
-    even when the write succeeds. The old code did:
-        if not update.data: return None, 0
-    This always bailed out immediately — commission NEVER paid.
-
-    FIX: Don't rely on update return value. Re-read the row after update
-    to confirm the status actually flipped to 'purchased'.
-    """
     if course_price <= 0:
-        print(f"[REFERRAL] Skipped: course_price={course_price} for buyer {buyer_id}")
         return None, 0
 
-    # 1. Find referral row
     ref_row = supabase.table("referrals").select("*").eq("referred_user_id", buyer_id).execute()
     if not ref_row.data:
-        print(f"[REFERRAL] No referral row for buyer {buyer_id}")
         return None, 0
 
     ref            = ref_row.data[0]
@@ -171,46 +143,36 @@ def _pay_referrer(buyer_id: int, course_price: float, transaction_id: str, cours
     ref_id         = ref["id"]
     current_status = ref.get("status", "")
 
-    # 2. Idempotency guard
     if current_status == "purchased":
-        print(f"[REFERRAL] Already paid for buyer {buyer_id}, ref_id {ref_id}")
         return None, 0
     if current_status != "joined":
-        print(f"[REFERRAL] Unexpected status '{current_status}' for ref_id {ref_id}")
         return None, 0
 
     credit = round(course_price * REFERRAL_PERCENT / 100, 2)
 
-    # 3. Update status (do NOT check .data — always [] in supabase-py v2)
     supabase.table("referrals").update({
         "status":                 "purchased",
         "paid_on_transaction_id": str(transaction_id),
     }).eq("id", ref_id).execute()
 
-    # 4. Re-read to confirm update applied (real guard against RLS silent failures)
     verify = supabase.table("referrals").select("status").eq("id", ref_id).execute()
     if not verify.data or verify.data[0].get("status") != "purchased":
-        confirmed = verify.data[0].get("status") if verify.data else "NO ROW"
-        print(f"[REFERRAL] Update did NOT apply for ref_id {ref_id}. Status: {confirmed}. Check RLS.")
         return None, 0
 
-    # 5. Credit wallet
-    print(f"[REFERRAL] Crediting referrer {referrer_id} ₹{credit} for buyer {buyer_id}")
     _add_wallet(referrer_id, credit)
 
-    # 6. Audit log (best-effort)
     try:
         supabase.table("referral_commissions").insert({
             "referrer_id":    referrer_id,
             "buyer_id":       buyer_id,
             "transaction_id": str(transaction_id),
-            "course_id":      course_id,  # Add this line
+            "course_id":      course_id,
             "course_price":   course_price,
             "commission_pct": REFERRAL_PERCENT,
             "commission_amt": credit,
         }).execute()
     except Exception as e:
-        print(f"[REFERRAL] Audit log failed: {e}")
+        print(f"[REFERRAL] Audit log failed (non-fatal): {e}")
 
     return referrer_id, credit
 
@@ -251,54 +213,6 @@ def _admin_keyboard(trans_id: str) -> InlineKeyboardMarkup:
 # ══════════════════════════════════════════════════════════════════════════════
 # MISC HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
-
-# ── Add this in the MISC HELPERS section ──────────────────────────────────────
-
-async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
-    """
-    Sends follow-up messages if the user hasn't purchased after 15m and 24h.
-    These messages do NOT self-destruct.
-    """
-    # 1. Wait 16 minutes (960s) - lets the 15m sales post delete first
-    await asyncio.sleep(960) 
-    
-    # Check if they already purchased or have a pending approval
-    # This prevents bothering users who have already sent a screenshot
-    check = supabase.table("transactions").select("status").eq(
-        "telegram_user_id", user_id
-    ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
-    
-    if not check.data:
-        kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="💳 Resume Purchase", callback_data=f"buy:{course_id}"))
-        kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/YourAdminUsername"))
-        
-        await bot.send_message(
-            chat_id=user_id,
-            text=f"👋 <b>Still interested in {course_title}?</b>\n\n"
-                 "We noticed you didn't finish your checkout. If you had any trouble with the "
-                 "payment methods or have questions, feel free to reach out to our support team!",
-            reply_markup=kb.as_markup(),
-            parse_mode="HTML"
-        )
-
-        # 2. Wait 24 hours (86400s) for the final follow-up
-        await asyncio.sleep(86400)
-        
-        # Check again - only send if they STILL haven't bought it
-        check_final = supabase.table("transactions").select("status").eq(
-            "telegram_user_id", user_id
-        ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
-        
-        if not check_final.data:
-            await bot.send_message(
-                chat_id=user_id,
-                text=f"✨ <b>Last call for {course_title}!</b>\n\n"
-                     "The private access link for this course is still available for you. "
-                     "Don't miss out on mastering these skills!",
-                reply_markup=kb.as_markup(),
-                parse_mode="HTML"
-            )
 
 async def _auto_delete(chat_id: int, message_id: int, delay: int = AUTO_DELETE_SECS):
     await asyncio.sleep(delay)
@@ -342,90 +256,89 @@ async def _deliver_course(user_id: int, course_id: str):
                                       parse_mode="HTML", disable_web_page_preview=True)
     asyncio.create_task(_auto_delete(user_id, sent.message_id))
 
+async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
+    await asyncio.sleep(960) 
+    
+    check = supabase.table("transactions").select("status").eq(
+        "telegram_user_id", user_id
+    ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
+    
+    if not check.data:
+        kb = InlineKeyboardBuilder()
+        kb.row(InlineKeyboardButton(text="💳 Resume Purchase", callback_data=f"buy:{course_id}"))
+        kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/YourAdminUsername"))
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"👋 <b>Still interested in {course_title}?</b>\n\n"
+                 "We noticed you didn't finish your checkout. If you had any trouble with the "
+                 "payment methods or have questions, feel free to reach out to our support team!",
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML"
+        )
+
+        await asyncio.sleep(86400)
+        
+        check_final = supabase.table("transactions").select("status").eq(
+            "telegram_user_id", user_id
+        ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
+        
+        if not check_final.data:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"✨ <b>Last call for {course_title}!</b>\n\n"
+                     "The private access link for this course is still available for you. "
+                     "Don't miss out on mastering these skills!",
+                reply_markup=kb.as_markup(),
+                parse_mode="HTML"
+            )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /start — COURSE DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dp.message(CommandStart())
-async def handle_start(message: types.Message, command: CommandObject):
-    user_id  = message.from_user.id
-    username = message.from_user.username
-    args     = command.args or ""
+async def handle_course_selection(message: types.Message, command: CommandObject):
+    course_id = (command.args or "").strip()
+    user_id   = message.from_user.id
 
-    if args == "refer":
-        return await _send_referral_info(user_id, username, message)
+    if not course_id:
+        return await message.answer("⚠️ Please use a valid course link to start.")
 
-    referrer_id = None
-    if "-ref-" in args:
-        code, ref_part = args.split("-ref-", 1)
-        try:
-            referrer_id = int(ref_part)
-        except ValueError:
-            referrer_id = None
+    if course_id == BUNDLE_COURSE_ID:
+        course = {
+            "title": "Full Collection Bundle",
+            "bot2_text": (
+                "🔥 <b>The Ultimate Mega Bundle</b>\n\n"
+                "Get instant access to every single course in our catalog. "
+                "This is the best value option for serious learners."
+            ),
+            "price": f"₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}",
+            "bot2_image_id": PAYMENT_OPTIONS_IMAGE, 
+            "numeric_price": BUNDLE_PRICE_INR
+        }
     else:
-        code = args
+        res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
+        if not res.data:
+            return await message.answer("❌ Course not found or the link is invalid.")
+        course = res.data[0]
 
-    if code != SECRET_CODE:
-        return await message.answer(
-            "👋 <b>Welcome!</b>\n\n"
-            "You need a valid invite link to access the private catalog.\n\n"
-            "<i>Ask a friend who's already inside to share their referral link with you.</i>",
-            parse_mode="HTML"
-        )
+    price  = round(float(course.get("numeric_price", 0)), 2)
+    wallet = _get_wallet(user_id)
 
-    _ensure_user(user_id, username)
+    _cancel_pending(user_id)
+    _create_transaction(user_id, course_id)
 
-    # Validate referrer_id exists in DB before recording referral.
-    if referrer_id and referrer_id != user_id:
-        referrer_exists = supabase.table("users").select("telegram_user_id").eq("telegram_user_id", referrer_id).execute()
-        if referrer_exists.data:
-            existing_ref = supabase.table("referrals").select("id").eq("referred_user_id", user_id).execute()
-            if not existing_ref.data:
-                supabase.table("referrals").insert({
-                    "referrer_id":      referrer_id,
-                    "referred_user_id": user_id,
-                    "status":           "joined"
-                }).execute()
-                try:
-                    await bot.send_message(
-                        referrer_id,
-                        "🎉 <b>Someone just joined using your referral link!</b>\n\n"
-                        f"You'll earn <b>{REFERRAL_PERCENT}%</b> wallet credit the moment they make a purchase. 💸",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-
-    courses = supabase.table("courses").select("course_id, title").execute().data
-    builder = InlineKeyboardBuilder()
-    
-    # 1. Add all individual courses inside the loop
-    for c in courses:
-        if c["course_id"] != "bundle_all":
-            builder.row(InlineKeyboardButton(
-                text=f"📘 {c['title']}",
-                url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
-            ))
-
-    # 2. PINNED BUNDLE BUTTON: Added strictly outside the loop
-    builder.row(InlineKeyboardButton(
-        text="🎁 Get All Courses (Mega Bundle) — Save 60%!",
-        url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
-    ))
-
-    wallet      = _get_wallet(user_id)
-    wallet_note = f"\n\n💰 <b>Wallet Balance:</b> ₹{wallet:.2f}" if wallet > 0 else ""
-
-    await message.answer_photo(
-        photo=WELCOME_PHOTO,
-        caption=(
-            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
-            f"Browse the courses below and tap one to view details & purchase.{wallet_note}"
-        ),
-        reply_markup=builder.as_markup(),
+    sent = await message.answer_photo(
+        photo=course["bot2_image_id"],
+        caption=_course_caption(course),
+        reply_markup=_course_keyboard(course_id, wallet, price),
         parse_mode="HTML"
     )
+    
+    asyncio.create_task(_auto_delete(message.chat.id, sent.message_id))
+    asyncio.create_task(_recovery_notifications(user_id, course_id, course["title"]))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -459,13 +372,29 @@ async def show_discounts(callback: types.CallbackQuery):
 async def back_to_course(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
     user_id   = callback.from_user.id
-    res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
-    if not res.data:
-        await _safe_delete(callback.message.chat.id, callback.message.message_id)
-        return await callback.answer()
-    course = res.data[0]
+    
+    if course_id == BUNDLE_COURSE_ID:
+        course = {
+            "title": "Full Collection Bundle",
+            "bot2_text": (
+                "🔥 <b>The Ultimate Mega Bundle</b>\n\n"
+                "Get instant access to every single course in our catalog. "
+                "This is the best value option for serious learners."
+            ),
+            "price": f"₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}",
+            "bot2_image_id": PAYMENT_OPTIONS_IMAGE, 
+            "numeric_price": BUNDLE_PRICE_INR
+        }
+    else:
+        res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
+        if not res.data:
+            await _safe_delete(callback.message.chat.id, callback.message.message_id)
+            return await callback.answer()
+        course = res.data[0]
+        
     price  = round(float(course.get("numeric_price", 0)), 2)
     wallet = _get_wallet(user_id)
+    
     try:
         await callback.message.edit_media(
             media=InputMediaPhoto(
@@ -605,19 +534,15 @@ PAYMENT_METHODS = {
     },
 }
 
-# ── Update payment_method_intercept ──────────────────────────────────────────
-
 @dp.callback_query(F.data.startswith("pay:"))
 async def payment_method_intercept(callback: types.CallbackQuery):
     parts     = callback.data.split(":", 2)
     method    = parts[1] if len(parts) > 1 else ""
     course_id = parts[2] if len(parts) > 2 else ""
-
-    # NEW: If it's already the bundle, go straight to payment details
+    
     if course_id == BUNDLE_COURSE_ID:
         return await _show_payment_detail(callback, method, course_id)
-
-    # For individual courses, still show the upgrade message
+        
     res          = supabase.table("courses").select("price").eq("course_id", course_id).execute()
     single_price = res.data[0]["price"] if res.data else "?"
     
@@ -629,6 +554,7 @@ async def payment_method_intercept(callback: types.CallbackQuery):
                 f"You're about to pay <b>{single_price}</b> for one course.\n\n"
                 "📦 <b>Full Collection Bundle</b>\n"
                 f"Get <b>all our courses</b> for just <b>₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}</b>\n\n"
+                "That's every course we offer at one unbeatable price.\n\n"
                 "💬 <b>Would you like to upgrade to the full collection?</b>"
             ),
             parse_mode="HTML"
@@ -677,15 +603,6 @@ async def _show_payment_detail(callback: types.CallbackQuery, method: str, cours
 
 # ══════════════════════════════════════════════════════════════════════════════
 # USE WALLET
-#
-# REFERRAL WALLET RULES:
-#   - Balance comes from referring friends who buy courses (25% commission).
-#   - Wallet can only be used if balance >= full course price (no partial use).
-#   - Using wallet sends an admin approval request. Wallet is NOT deducted yet.
-#   - Admin approves → wallet deducted + course delivered.
-#   - Admin rejects → nothing deducted, user is notified.
-#   - Cannot submit a second wallet request while one is pending approval.
-#   - Cannot use wallet for the same course twice.
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("usewallet:"))
@@ -693,17 +610,14 @@ async def use_wallet(callback: types.CallbackQuery):
     user_id   = callback.from_user.id
     course_id = callback.data.split(":", 1)[1]
 
-    # 1. Get course price via single authoritative helper
     course_price = _get_course_price(course_id)
     course_title = _get_course_title(course_id)
 
     if course_price <= 0:
         return await callback.answer("❌ This course has no price set. Contact admin.", show_alert=True)
 
-    # 2. Read wallet balance fresh from DB
     wallet = _get_wallet(user_id)
 
-    # 3. Hard block — wallet must cover full price
     if wallet < course_price:
         shortage = round(course_price - wallet, 2)
         return await callback.answer(
@@ -715,7 +629,6 @@ async def use_wallet(callback: types.CallbackQuery):
             show_alert=True
         )
 
-    # 4. Get the active pending transaction for this course
     tx = _get_pending_tx(user_id, course_id)
     if tx is None:
         return await callback.answer(
@@ -724,7 +637,6 @@ async def use_wallet(callback: types.CallbackQuery):
         )
     trans_id = tx["id"]
 
-    # 5. Guard against double-submission on the same transaction
     if round(float(tx.get("wallet_used") or 0), 2) > 0:
         return await callback.answer(
             "⏳ Your wallet payment is already pending admin approval.\n"
@@ -732,8 +644,6 @@ async def use_wallet(callback: types.CallbackQuery):
             show_alert=True
         )
 
-    # 6. Mark transaction as awaiting_approval with wallet details
-    #    Wallet is NOT deducted here. Deduction happens only on admin approval.
     supabase.table("transactions").update({
         "wallet_used":  course_price,
         "amount_paid":  course_price,
@@ -741,7 +651,6 @@ async def use_wallet(callback: types.CallbackQuery):
         "payment_type": "wallet",
     }).eq("id", trans_id).execute()
 
-    # 7. Update user-facing message
     await callback.message.edit_caption(
         caption=(
             "💰 <b>Wallet Payment Request Sent!</b>\n\n"
@@ -754,7 +663,6 @@ async def use_wallet(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
 
-    # 8. Notify admin with full details
     await bot.send_message(
         chat_id=ADMIN_ID,
         text=(
@@ -798,7 +706,6 @@ async def handle_screenshot(message: types.Message):
     trans_id  = tx["id"]
     course_id = tx["course_id"]
 
-    # Read price from tx row (stored at creation) — never ₹0
     course_price = round(float(tx.get("amount_paid") or 0), 2)
     if course_price <= 0:
         course_price = _get_course_price(course_id)
@@ -836,8 +743,6 @@ async def handle_screenshot(message: types.Message):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN APPROVE / REJECT
-#
-# THE ONLY PLACE WHERE WALLET IS DEDUCTED.
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("approve_") | F.data.startswith("reject_"))
@@ -846,7 +751,7 @@ async def admin_decision(callback: types.CallbackQuery):
         return await callback.answer("⛔ Unauthorized.", show_alert=True)
 
     action, trans_id_str = callback.data.split("_", 1)
-    trans_id = trans_id_str  # UUID string, not int
+    trans_id = trans_id_str
 
     res = supabase.table("transactions").select("*").eq("id", trans_id).execute()
     if not res.data:
@@ -854,7 +759,6 @@ async def admin_decision(callback: types.CallbackQuery):
 
     tx = res.data[0]
 
-    # Idempotency: prevent double-processing
     if tx["status"] in ("approved", "rejected"):
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
@@ -867,26 +771,21 @@ async def admin_decision(callback: types.CallbackQuery):
     wallet_used  = round(float(tx.get("wallet_used") or 0.0), 2)
     payment_type = tx.get("payment_type", "screenshot")
 
-    # Read price from tx (stored at creation — never 0)
     course_price = round(float(tx.get("amount_paid") or 0), 2)
     if course_price <= 0:
         course_price = _get_course_price(course_id)
     course_title = _get_course_title(course_id)
 
-    # Remove buttons immediately to block double-click
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
 
-    # ── APPROVE ───────────────────────────────────────────────────────────────
     if action == "approve":
 
-        # For wallet payments: deduct NOW. This is the single deduction point.
         if payment_type == "wallet" and wallet_used > 0:
             deducted = _deduct_wallet(user_id, wallet_used)
             if not deducted:
-                # Balance is insufficient at approval time (edge case)
                 supabase.table("transactions").update({"status": "rejected"}).eq("id", trans_id).execute()
                 await bot.send_message(
                     user_id,
@@ -905,13 +804,10 @@ async def admin_decision(callback: types.CallbackQuery):
                     pass
                 return await callback.answer("❌ Wallet insufficient — auto-rejected.", show_alert=True)
 
-        # Mark approved in DB
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id).execute()
 
-        # Deliver course
         await _deliver_course(user_id, course_id)
 
-        # Pay referrer — course_price already resolved above from tx.amount_paid
         referrer_id, credit = _pay_referrer(user_id, course_price, trans_id, course_id)
         if referrer_id:
             try:
@@ -927,7 +823,6 @@ async def admin_decision(callback: types.CallbackQuery):
             except Exception:
                 pass
 
-        # Update admin message to show result
         new_bal = _get_wallet(user_id)
         suffix  = f"\n\n✅ <b>APPROVED & DELIVERED</b>"
         suffix += f"\n📘 Course: {course_title}"
@@ -946,12 +841,9 @@ async def admin_decision(callback: types.CallbackQuery):
 
         await callback.answer("✅ Approved and delivered!")
 
-    # ── REJECT ────────────────────────────────────────────────────────────────
     elif action == "reject":
         supabase.table("transactions").update({"status": "rejected"}).eq("id", trans_id).execute()
 
-        # Wallet payments: nothing was deducted, so nothing to refund.
-        # Screenshot payments: tell user to retry.
         if payment_type == "wallet":
             user_msg = (
                 "❌ <b>Wallet payment request rejected.</b>\n\n"
