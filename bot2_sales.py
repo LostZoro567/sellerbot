@@ -351,29 +351,48 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     course_id = (command.args or "").strip()
     user_id   = message.from_user.id
 
-    if not course_id or course_id == BUNDLE_COURSE_ID:
+    if not course_id:
         return await message.answer("⚠️ Please use a valid course link to start.")
 
-    res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
-    if not res.data:
-        return await message.answer("❌ Course not found or the link is invalid.")
+    # Special handling if the user selected the Mega Bundle 
+    if course_id == BUNDLE_COURSE_ID:
+        course = {
+            "title": "Full Collection Bundle",
+            "bot2_text": (
+                "🔥 <b>The Ultimate Mega Bundle</b>\n\n"
+                "Get instant access to every single course in our catalog. "
+                "This is the best value option for serious learners."
+            ),
+            "price": f"₹{BUNDLE_PRICE_INR:,} / ${BUNDLE_PRICE_USD}",
+            "bot2_image_id": PAYMENT_OPTIONS_IMAGE, 
+            "numeric_price": BUNDLE_PRICE_INR
+        }
+    else:
+        # Standard course lookup from Supabase 
+        res = supabase.table("courses").select("*").eq("course_id", course_id).execute()
+        if not res.data:
+            return await message.answer("❌ Course not found or the link is invalid.")
+        course = res.data[0]
 
-    course = res.data[0]
     price  = round(float(course.get("numeric_price", 0)), 2)
     wallet = _get_wallet(user_id)
 
+    # Clean up any existing state for this user 
     _cancel_pending(user_id)
     _create_transaction(user_id, course_id)
 
+    # Send the sales post 
     sent = await message.answer_photo(
         photo=course["bot2_image_id"],
         caption=_course_caption(course),
         reply_markup=_course_keyboard(course_id, wallet, price),
         parse_mode="HTML"
     )
+    
+    # 1. Background Task: Auto-delete the sales post after 15 minutes 
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id))
-
-# --- ADD THIS LINE HERE ---
+    
+    # 2. Background Task: Start recovery notifications (15m and 24h follow-ups) 
     asyncio.create_task(_recovery_notifications(user_id, course_id, course["title"]))
 
 
