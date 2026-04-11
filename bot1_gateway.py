@@ -66,10 +66,6 @@ def _add_wallet(user_id: int, amount: float):
         }).execute()
 
 def _deduct_wallet(user_id: int, amount: float) -> bool:
-    """
-    FIX: Strict >= balance check. No floating-point tolerance that could allow
-    a user with ₹0.00 to deduct ₹0.02 due to the old (amount - 0.02) trick.
-    """
     current = _get_wallet(user_id)
     if current < amount:
         return False
@@ -144,8 +140,6 @@ async def handle_start(message: types.Message, command: CommandObject):
 
     _ensure_user(user_id, username)
 
-    # FIX: Validate referrer_id exists in DB before recording referral.
-    # Prevents phantom referrer IDs (manually crafted deep links with fake IDs).
     if referrer_id and referrer_id != user_id:
         referrer_exists = supabase.table("users").select("telegram_user_id").eq("telegram_user_id", referrer_id).execute()
         if referrer_exists.data:
@@ -168,12 +162,20 @@ async def handle_start(message: types.Message, command: CommandObject):
 
     courses = supabase.table("courses").select("course_id, title").execute().data
     builder = InlineKeyboardBuilder()
+    
+    # 1. Add all individual courses inside the loop
     for c in courses:
         if c["course_id"] != "bundle_all":
             builder.row(InlineKeyboardButton(
                 text=f"📘 {c['title']}",
                 url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
             ))
+
+    # 2. PINNED BUNDLE BUTTON: Added strictly outside the loop
+    builder.row(InlineKeyboardButton(
+        text="🎁 Get All Courses (Mega Bundle) — Save 60%!",
+        url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
+    ))
 
     wallet      = _get_wallet(user_id)
     wallet_note = f"\n\n💰 <b>Wallet Balance:</b> ₹{wallet:.2f}" if wallet > 0 else ""
@@ -400,8 +402,6 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
     status_msg = await message.answer("⏳ Collecting user list…")
 
-    # FIX: Broadcast to ALL users (not just those who have transactions),
-    # so new users who haven't purchased yet still receive announcements.
     rows         = supabase.table("users").select("telegram_user_id").execute().data
     unique_users = {r["telegram_user_id"] for r in rows}
 
@@ -413,8 +413,6 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
             await asyncio.sleep(0.05)
         except TelegramForbiddenError:
             fail += 1
-            # FIX: Clean up ALL tables when a blocked/dead user is detected,
-            # not just transactions — prevents stale data in users and referrals.
             supabase.table("transactions").delete().eq("telegram_user_id", uid).execute()
             supabase.table("referrals").delete().eq("referred_user_id", uid).execute()
             supabase.table("users").delete().eq("telegram_user_id", uid).execute()
