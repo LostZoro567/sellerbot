@@ -22,7 +22,6 @@ WELCOME_PHOTO    = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg"
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
 
-
 # ── FSM States ─────────────────────────────────────────────────────────────────
 
 class AddCourseFSM(StatesGroup):
@@ -36,7 +35,6 @@ class AddCourseFSM(StatesGroup):
 
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -73,9 +71,6 @@ def _deduct_wallet(user_id: int, amount: float) -> bool:
     supabase.table("users").update({"wallet_balance": new_balance}).eq("telegram_user_id", user_id).execute()
     return True
 
-
-# ── Shared helper: full referral program screen ────────────────────────────────
-
 async def _send_referral_info(user_id: int, username, target: types.Message):
     _ensure_user(user_id, username)
 
@@ -108,8 +103,7 @@ async def _send_referral_info(user_id: int, username, target: types.Message):
         parse_mode="HTML"
     )
 
-
-# ── /start ─────────────────────────────────────────────────────────────────────
+# ── /start & Bundle Menus ─────────────────────────────────────────────────────
 
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, command: CommandObject):
@@ -163,18 +157,17 @@ async def handle_start(message: types.Message, command: CommandObject):
     courses = supabase.table("courses").select("course_id, title").execute().data
     builder = InlineKeyboardBuilder()
     
-    # 1. Add all individual courses inside the loop
+    # Render all individual courses
     for c in courses:
-        if c["course_id"] != "bundle_all":
-            builder.row(InlineKeyboardButton(
-                text=f"📘 {c['title']}",
-                url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
-            ))
+        builder.row(InlineKeyboardButton(
+            text=f"📘 {c['title']}",
+            url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
+        ))
 
-    # 2. PINNED BUNDLE BUTTON: Added strictly outside the loop
+    # Pinned Bundles Menu Button
     builder.row(InlineKeyboardButton(
-        text="🎁 Get All Courses (Mega Bundle) — Save 60%!",
-        url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
+        text="🎁 View Special Discounted Bundles",
+        callback_data="show_bundles_menu"
     ))
 
     wallet      = _get_wallet(user_id)
@@ -184,14 +177,62 @@ async def handle_start(message: types.Message, command: CommandObject):
         photo=WELCOME_PHOTO,
         caption=(
             "🎓 <b>Welcome to the Private Portal!</b>\n\n"
-            f"Browse the courses below and tap one to view details & purchase.{wallet_note}"
+            "Browse the courses below or check out our special bundles." + wallet_note
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
 
+@dp.callback_query(F.data == "show_bundles_menu")
+async def menu_show_bundles(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    
+    # Configure your bundle deep links here
+    builder.row(InlineKeyboardButton(text="📦 Combo: Course 1 + Course 2", url=f"https://t.me/{BOT2_USERNAME}?start=bundle_1_2"))
+    builder.row(InlineKeyboardButton(text="📦 Combo: Course 4 + Course 6", url=f"https://t.me/{BOT2_USERNAME}?start=bundle_4_6"))
+    builder.row(InlineKeyboardButton(text="🔥 MEGA BUNDLE: All Courses", url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back to All Courses", callback_data="back_to_main_menu"))
 
-# ── /wallet ─────────────────────────────────────────────────────────────────────
+    await callback.message.edit_caption(
+        caption=(
+            "🎁 <b>Exclusive Bundles</b>\n\n"
+            "Select a bundle below to get multiple courses at a massively discounted price!"
+        ),
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_main_menu")
+async def menu_back_to_main(callback: types.CallbackQuery):
+    courses = supabase.table("courses").select("course_id, title").execute().data
+    builder = InlineKeyboardBuilder()
+    
+    for c in courses:
+        builder.row(InlineKeyboardButton(
+            text=f"📘 {c['title']}",
+            url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
+        ))
+
+    builder.row(InlineKeyboardButton(
+        text="🎁 View Special Discounted Bundles",
+        callback_data="show_bundles_menu"
+    ))
+
+    wallet = _get_wallet(callback.from_user.id)
+    wallet_note = f"\n\n💰 <b>Wallet Balance:</b> ₹{wallet:.2f}" if wallet > 0 else ""
+
+    await callback.message.edit_caption(
+        caption=(
+            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
+            "Browse the courses below or check out our special bundles." + wallet_note
+        ),
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+# ── /wallet & Referrals ────────────────────────────────────────────────────────
 
 @dp.message(Command("wallet"))
 async def cmd_wallet(message: types.Message):
@@ -218,15 +259,9 @@ async def cmd_wallet(message: types.Message):
         parse_mode="HTML"
     )
 
-
-# ── /refer ─────────────────────────────────────────────────────────────────────
-
 @dp.message(Command("refer"))
 async def cmd_refer(message: types.Message):
     await _send_referral_info(message.from_user.id, message.from_user.username, message)
-
-
-# ── Referral link callback ──────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "get_referral_link")
 async def send_referral_link(callback: types.CallbackQuery):
@@ -243,7 +278,6 @@ async def send_referral_link(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
-
 
 # ── ADMIN: /addnew ──────────────────────────────────────────────────────────────
 
@@ -381,7 +415,6 @@ async def process_delivery_content(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-
 # ── ADMIN: /broadcast ──────────────────────────────────────────────────────────
 
 @dp.message(Command("broadcast"))
@@ -426,7 +459,6 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-
 # ── ADMIN: /stats ──────────────────────────────────────────────────────────────
 
 @dp.message(Command("stats"))
@@ -449,7 +481,6 @@ async def cmd_stats(message: types.Message):
         f"💰 Referrals → Purchase: <b>{paid_refs}</b>",
         parse_mode="HTML"
     )
-
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
