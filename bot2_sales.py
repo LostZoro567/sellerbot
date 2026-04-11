@@ -152,10 +152,10 @@ def _course_keyboard(course_id: str, wallet: float, price: float) -> InlineKeybo
 
 def _payment_keyboard(course_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📷  QR Code",        callback_data=f"pay:qr:{course_id}")],
-        [InlineKeyboardButton(text="🔵  Paytm / UPI",    callback_data=f"pay:paytm:{course_id}")],
-        [InlineKeyboardButton(text="🟦  PayPal",          callback_data=f"pay:paypal:{course_id}")],
-        [InlineKeyboardButton(text="🟠  Crypto (USDT)",   callback_data=f"pay:crypto:{course_id}")],
+        [InlineKeyboardButton(text="🧾 Scan QR",        callback_data=f"pay:qr:{course_id}")],
+        [InlineKeyboardButton(text="💳  Paytm / UPI",    callback_data=f"pay:paytm:{course_id}")],
+        [InlineKeyboardButton(text="🌐  PayPal",          callback_data=f"pay:paypal:{course_id}")],
+        [InlineKeyboardButton(text="🪙  Crypto (USDT)",   callback_data=f"pay:crypto:{course_id}")],
         [InlineKeyboardButton(text="💬  Other Methods",   callback_data=f"pay:others:{course_id}")],
         [InlineKeyboardButton(text="🎁  Refer & Earn",    url=f"https://t.me/{BOT1_USERNAME}?start=refer")],
         [InlineKeyboardButton(text="⬅️  Back to Item",   callback_data=f"backcourse:{course_id}")],
