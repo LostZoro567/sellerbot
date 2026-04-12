@@ -427,8 +427,7 @@ async def _show_payment_options(callback: types.CallbackQuery, course_id: str):
                 "⏳ <i>This window closes in 15 minutes.</i>"
             ),
             reply_markup=_payment_keyboard(course_id),
-            parse_mode="HTML",
-            protect_content=True
+            parse_mode="HTML"
         )
         asyncio.create_task(_auto_delete(user_id, sent.message_id))
     except Exception:
