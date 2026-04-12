@@ -13,11 +13,11 @@ from db import supabase
 load_dotenv()
 
 BOT_TOKEN        = os.getenv("BOT1_TOKEN")
-SECRET_CODE      = os.getenv("SECRET_INVITE_CODE")
 ADMIN_ID         = int(os.getenv("ADMIN_ID"))
 BOT2_USERNAME    = os.getenv("BOT2_USERNAME", "ExclusiveCollectionVIP_bot")
 REFERRAL_PERCENT = 25
 WELCOME_PHOTO    = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg"
+AUTO_DELETE_SECS = 900
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
@@ -47,6 +47,13 @@ class BroadcastFSM(StatesGroup):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+async def _auto_delete(chat_id: int, message_id: int, delay: int = AUTO_DELETE_SECS):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
 def _ensure_user(user_id: int, username=None):
     existing = supabase.table("users").select("telegram_user_id").eq("telegram_user_id", user_id).execute()
     if not existing.data:
@@ -68,7 +75,7 @@ async def _send_referral_info(user_id: int, username, target: types.Message):
     paid_refs = len(supabase.table("referrals").select("id").eq("referrer_id", user_id).eq("status", "purchased").execute().data)
 
     bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={SECRET_CODE}-ref-{user_id}"
+    ref_link = f"https://t.me/{bot_info.username}?start=ref-{user_id}"
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔗  Copy My Referral Link", callback_data="get_referral_link"))
@@ -104,22 +111,11 @@ async def handle_start(message: types.Message, command: CommandObject):
         return await _send_referral_info(user_id, username, message)
 
     referrer_id = None
-    if "-ref-" in args:
-        code, ref_part = args.split("-ref-", 1)
+    if args.startswith("ref-"):
         try:
-            referrer_id = int(ref_part)
+            referrer_id = int(args.replace("ref-", ""))
         except ValueError:
             referrer_id = None
-    else:
-        code = args
-
-    if code != SECRET_CODE:
-        return await message.answer(
-            "👋 <b>Welcome!</b>\n\n"
-            "You need a valid invite link to access the private catalog.\n\n"
-            "<i>Ask a friend who's already inside to share their referral link with you.</i>",
-            parse_mode="HTML"
-        )
 
     _ensure_user(user_id, username)
 
@@ -162,15 +158,18 @@ async def handle_start(message: types.Message, command: CommandObject):
     wallet      = _get_wallet(user_id)
     wallet_note = f"\n\n💰 <b>Wallet Balance:</b> ₹{wallet:.2f}" if wallet > 0 else ""
 
-    await message.answer_photo(
+    sent_msg = await message.answer_photo(
         photo=WELCOME_PHOTO,
         caption=(
-            "🛒 <b>Telegram's Best Collection!</b>\n\n"
-            "🔥 Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n✨ <b>Buy All Collection</b> :\n<del>Regular Price : 3,599₹ / 60$</del> ❌\n\nBundle Offer = 1,499₹ / 22$ ✅" + wallet_note
+            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
+            "Browse the courses below or check out our special bundles." + wallet_note +
+            "\n\n⏳ <i>This message self-destructs in 15 minutes.</i>"
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
+    
+    asyncio.create_task(_auto_delete(message.chat.id, sent_msg.message_id))
 
 @dp.callback_query(F.data == "show_bundles_menu")
 async def menu_show_bundles(callback: types.CallbackQuery):
@@ -193,7 +192,8 @@ async def menu_show_bundles(callback: types.CallbackQuery):
     await callback.message.edit_caption(
         caption=(
             "🎁 <b>Exclusive Bundles</b>\n\n"
-            "Select a bundle below to get multiple courses at a massively discounted price!"
+            "Select a bundle below to get multiple courses at a massively discounted price!\n\n"
+            "⏳ <i>This message self-destructs in 15 minutes.</i>"
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -223,8 +223,9 @@ async def menu_back_to_main(callback: types.CallbackQuery):
 
     await callback.message.edit_caption(
         caption=(
-            "🛒 <b>Telegram's Best Collection!</b>\n\n"
-            "🔥 Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n✨ <b>Buy All Collection</b> :\n<del>Regular Price : 3,599₹ / 60$</del> ❌\n\nBundle Offer = 1,499₹ / 22$ ✅" + wallet_note
+            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
+            "Browse the courses below or check out our special bundles." + wallet_note +
+            "\n\n⏳ <i>This message self-destructs in 15 minutes.</i>"
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -266,7 +267,7 @@ async def cmd_refer(message: types.Message):
 async def send_referral_link(callback: types.CallbackQuery):
     user_id  = callback.from_user.id
     bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={SECRET_CODE}-ref-{user_id}"
+    ref_link = f"https://t.me/{bot_info.username}?start=ref-{user_id}"
 
     await callback.message.answer(
         "🔗 <b>Your Personal Referral Link</b>\n\n"
