@@ -631,6 +631,7 @@ async def admin_decision(callback: types.CallbackQuery):
     if course_price <= 0:
         course_price = _get_course_price(course_id)
 
+    # Remove buttons instantly so you cannot double-click
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
@@ -655,7 +656,12 @@ async def admin_decision(callback: types.CallbackQuery):
                     pass
                 return await callback.answer("❌ Wallet insufficient — auto-rejected.", show_alert=True)
 
+        # 🛠 FIX: Acknowledge the button click immediately so Telegram doesn't time out
+        await callback.answer("✅ Approving and delivering files... (This may take a moment)")
+
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id_str).execute()
+        
+        # Now the bot takes its time safely delivering files
         await _deliver_course(user_id, course_id)
         
         referrer_id, credit = _pay_referrer(user_id, course_price, trans_id_str, course_id)
@@ -684,10 +690,11 @@ async def admin_decision(callback: types.CallbackQuery):
             )
         except Exception:
             pass
-            
-        await callback.answer("✅ Approved and delivered!")
 
     elif action == "reject":
+        # 🛠 FIX: Acknowledge the button click immediately
+        await callback.answer("❌ Rejecting...")
+        
         supabase.table("transactions").update({"status": "rejected"}).eq("id", trans_id_str).execute()
         
         if payment_type == "wallet":
@@ -704,8 +711,6 @@ async def admin_decision(callback: types.CallbackQuery):
             )
         except Exception:
             pass
-            
-        await callback.answer("❌ Rejected.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENTRY
