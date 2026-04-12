@@ -512,8 +512,7 @@ PAYMENT_METHODS = {
     "others": {
         "text": (
             "💬 <b>Other Payment Methods</b>\n\n"
-            "Message the admin directly to arrange payment.\n\n"
-            "📸 <b>Once paid:</b> send your payment screenshot right here."
+            "Message the admin directly for other payment methods.\n\n"
         ),
         "image": "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg",
         "extra_buttons": [
