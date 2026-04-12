@@ -31,7 +31,7 @@ class AddCourseFSM(StatesGroup):
     waiting_for_price_usd        = State()
     waiting_for_bot2_text        = State()
     waiting_for_bot2_image       = State()
-    waiting_for_delivery_content = State()
+    waiting_for_dump_ids         = State() # NEW
 
 class AddBundleFSM(StatesGroup):
     waiting_for_bundle_id        = State()
@@ -40,7 +40,7 @@ class AddBundleFSM(StatesGroup):
     waiting_for_price_usd        = State()
     waiting_for_bot2_text        = State()
     waiting_for_bot2_image       = State()
-    waiting_for_delivery_content = State()
+    waiting_for_dump_ids         = State() # NEW
 
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
