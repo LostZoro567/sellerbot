@@ -202,14 +202,16 @@ async def _deliver_course(user_id: int, course_id: str):
         
     del_text = cr.data[0].get("delivery_text") or "✅ Payment verified! Here are your materials:"
     
+    # 1. Send the intro text (will be auto-deleted)
     sent_text = await bot.send_message(
         chat_id=user_id, 
-        text=f"{del_text}\n\n⏳ <i>These files will self-destruct in 15 minutes.</i>",
+        text=f"{del_text}",
         parse_mode="HTML", 
         disable_web_page_preview=True
     )
     asyncio.create_task(_auto_delete(user_id, sent_text.message_id))
 
+    # 2. Copy the files (will be auto-deleted)
     dump_ids_str = cr.data[0].get("dump_message_ids")
     if dump_ids_str:
         message_ids = [m.strip() for m in dump_ids_str.split(",") if m.strip()]
@@ -225,6 +227,19 @@ async def _deliver_course(user_id: int, course_id: str):
                 await asyncio.sleep(0.5) 
             except Exception as e:
                 print(f"Failed to deliver message {msg_id} from dump channel: {e}")
+
+    # 3. Send the permanent warning message (NO auto-delete task attached)
+    warning_text = (
+        "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
+        "The files above will be <b>automatically deleted in 15 minutes</b>. "
+        "Please forward them to your <b>Saved Messages</b> or download them immediately to secure your access.\n\n"
+        "<i>If your files have already disappeared and you lost access, please contact our support team.</i>"
+    )
+    await bot.send_message(
+        chat_id=user_id,
+        text=warning_text,
+        parse_mode="HTML"
+    )
 
 async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
     await asyncio.sleep(960) 
