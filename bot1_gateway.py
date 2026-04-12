@@ -223,8 +223,8 @@ async def menu_back_to_main(callback: types.CallbackQuery):
 
     await callback.message.edit_caption(
         caption=(
-            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
-            "Browse the courses below or check out our special bundles." + wallet_note
+            "🛒 <b>Telegram's Best Collection!</b>\n\n"
+            "Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n<b>Buy All Collection</b>\n<del>Regular Price : 3,599₹ / 60$</del>\n\nBundle Offer = 1,499₹ / 22$" + wallet_note
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
