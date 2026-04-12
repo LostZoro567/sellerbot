@@ -166,7 +166,7 @@ async def handle_start(message: types.Message, command: CommandObject):
         photo=WELCOME_PHOTO,
         caption=(
             "🛒 <b>Telegram's Best Collection!</b>\n\n"
-            "Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n<b>Buy All Collection</b>\n<del>Regular Price : 3,599₹ / 60$</del>\n\nBundle Offer = 1,499₹ / 22$" + wallet_note
+            "🔥 Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n✨ <b>Buy All Collection</b>\n<del>Regular Price : 3,599₹ / 60$</del> ❌\n\nBundle Offer = 1,499₹ / 22$ ✅" + wallet_note
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -224,7 +224,7 @@ async def menu_back_to_main(callback: types.CallbackQuery):
     await callback.message.edit_caption(
         caption=(
             "🛒 <b>Telegram's Best Collection!</b>\n\n"
-            "Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n<b>Buy All Collection</b>\n<del>Regular Price : 3,599₹ / 60$</del>\n\nBundle Offer = 1,499₹ / 22$" + wallet_note
+            "🔥 Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n✨ <b>Buy All Collection</b>\n<del>Regular Price : 3,599₹ / 60$</del> ❌\n\nBundle Offer = 1,499₹ / 22$ ✅" + wallet_note
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
