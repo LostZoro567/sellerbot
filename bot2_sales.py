@@ -12,7 +12,7 @@ load_dotenv()
 BOT_TOKEN             = os.getenv("BOT2_TOKEN")
 ADMIN_ID              = int(os.getenv("ADMIN_ID"))
 BOT1_USERNAME         = os.getenv("BOT1_USERNAME", "YourGatewayBot")
-DUMP_CHAT_ID          = int(os.getenv("DUMP_CHAT_ID", "-1000000000000"))
+DUMP_CHAT_ID          = int(os.getenv("DUMP_CHAT_ID", "-1003913013704"))
 AUTO_DELETE_SECS      = 900
 REFERRAL_PERCENT      = 25
 PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
