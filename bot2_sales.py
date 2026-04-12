@@ -345,13 +345,92 @@ async def back_to_course(callback: types.CallbackQuery):
     await callback.answer()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BUY NOW
+# BUY NOW & DYNAMIC UPSELL
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("buy:"))
-async def show_payment_methods(callback: types.CallbackQuery):
+async def upsell_interceptor(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
-    user_id   = callback.from_user.id
+    
+    # 1. Skip upsell ONLY if they are already buying the ultimate "bundle_all"
+    if course_id == "bundle_all":
+        return await _show_payment_options(callback, course_id)
+        
+    # 2. Fetch all bundles from the database
+    res = supabase.table("courses").select("course_id, title, button_text").ilike("course_id", "bundle_%").execute()
+    all_bundles = res.data
+    
+    # 3. Filter out the specific item they are currently buying so we don't upsell them what they already have
+    bundles = [b for b in all_bundles if b["course_id"] != course_id]
+    
+    # 4. If no *other* bundles exist, just go straight to payment
+    if not bundles:
+        return await _show_payment_options(callback, course_id)
+        
+    # 5. Create the dynamic upgrade menu
+    builder = InlineKeyboardBuilder()
+    for b in bundles:
+        display_name = b.get("button_text") or b["title"]
+        builder.row(InlineKeyboardButton(
+            text=f"🎁 Upgrade to {display_name}", 
+            callback_data=f"switch_to:{b['course_id']}"
+        ))
+        
+    builder.row(InlineKeyboardButton(
+        text="➡️ No thanks, continue to checkout", 
+        callback_data=f"continue_pay:{course_id}"
+    ))
+    
+    try:
+        await callback.message.edit_caption(
+            caption=(
+                "🛑 <b>Wait! Special Upgrade Offer</b>\n\n"
+                "Did you know you can get multiple items at a massive discount by upgrading to a larger bundle?\n\n"
+                "<i>Select a bundle below to view the offer, or skip to continue your current purchase.</i>"
+            ),
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("switch_to:"))
+async def switch_course_view(callback: types.CallbackQuery):
+    new_course_id = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id
+    
+    res = supabase.table("courses").select("*").eq("course_id", new_course_id).execute()
+    if not res.data:
+        return await callback.answer("❌ Bundle not found.", show_alert=True)
+        
+    course = res.data[0]
+    price  = round(float(course.get("numeric_price", 0)), 2)
+    wallet = _get_wallet(user_id)
+    
+    _cancel_pending(user_id)
+    _create_transaction(user_id, new_course_id)
+    
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=course["bot2_image_id"],
+                caption=_course_caption(course),
+                parse_mode="HTML"
+            ),
+            reply_markup=_course_keyboard(new_course_id, wallet, price)
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("continue_pay:"))
+async def bypass_upsell(callback: types.CallbackQuery):
+    course_id = callback.data.split(":", 1)[1]
+    await _show_payment_options(callback, course_id)
+
+async def _show_payment_options(callback: types.CallbackQuery, course_id: str):
+    user_id = callback.from_user.id
     _cancel_pending(user_id)
     _create_transaction(user_id, course_id)
     
@@ -376,7 +455,7 @@ async def show_payment_methods(callback: types.CallbackQuery):
     except Exception:
         await callback.answer("⚠️ Payment image link broken. Update PAYMENT_OPTIONS_IMAGE.", show_alert=True)
     await callback.answer()
-
+    
 # ══════════════════════════════════════════════════════════════════════════════
 # BACK TO PAYMENT OPTIONS
 # ══════════════════════════════════════════════════════════════════════════════
