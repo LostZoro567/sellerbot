@@ -15,6 +15,7 @@ BOT1_USERNAME         = os.getenv("BOT1_USERNAME", "YourGatewayBot")
 AUTO_DELETE_SECS      = 900
 REFERRAL_PERCENT      = 25
 PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
+DUMP_CHAT_ID = int(os.getenv("DUMP_CHAT_ID", "-1003913013704")) # Replace with your actual ID
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
