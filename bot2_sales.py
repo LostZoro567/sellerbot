@@ -422,8 +422,7 @@ async def _show_payment_options(callback: types.CallbackQuery, course_id: str):
             caption=(
                 "🏦 <b>Choose a Payment Method</b>\n\n"
                 f"💵 <b>Your price:</b> {price_display}\n\n"
-                "Select how you'd like to pay below.\n"
-                "After paying, send your payment screenshot here.\n\n"
+                "Select how you'd like to pay below.\n\n"
                 "⏳ <i>This window closes in 15 minutes.</i>"
             ),
             reply_markup=_payment_keyboard(course_id),
@@ -452,8 +451,7 @@ async def back_to_payment_options(callback: types.CallbackQuery):
                 caption=(
                     "🏦 <b>Choose a Payment Method</b>\n\n"
                     f"💵 <b>Your price:</b> {price_display}\n\n"
-                    "Select how you'd like to pay below.\n"
-                    "After paying, send your payment screenshot here.\n\n"
+                    "Select how you'd like to pay below.\n\n"
                     "⏳ <i>This window closes in 15 minutes.</i>"
                 ),
                 parse_mode="HTML"
