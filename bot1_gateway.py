@@ -366,25 +366,18 @@ async def process_bot2_image(message: types.Message, state: FSMContext):
     await state.update_data(bot2_image_id=message.text.strip())
     await message.answer(
         "✅ Thumbnail saved!\n\n"
-        "🛠 <b>Step 7 of 7 — Course Delivery Content</b>\n\n"
-        "Send what the buyer receives after payment:\n\n"
-        "• A <b>text message</b> (e.g. Drive links)\n"
-        "• Or a <b>file</b> (<code>.zip</code>, <code>.pdf</code>) with an optional caption",
+        "🛠 <b>Step 7 of 7 — Delivery Content (Message IDs)</b>\n\n"
+        "Go to your private Storage Channel and find the message IDs for the files/links you want to send.\n"
+        "Enter them separated by commas.\n\n"
+        "<i>(Example: <code>104, 105, 106</code>)</i>",
         parse_mode="HTML"
     )
-    await state.set_state(AddCourseFSM.waiting_for_delivery_content)
+    await state.set_state(AddCourseFSM.waiting_for_dump_ids)
 
-@dp.message(AddCourseFSM.waiting_for_delivery_content)
-async def process_delivery_content(message: types.Message, state: FSMContext):
+@dp.message(AddCourseFSM.waiting_for_dump_ids)
+async def process_dump_ids(message: types.Message, state: FSMContext):
     data = await state.get_data()
-
-    delivery_text    = message.text or message.caption or "✅ Payment verified! Here is your course material."
-    delivery_file_id = None
-
-    if message.document:
-        delivery_file_id = message.document.file_id
-    elif message.video:
-        delivery_file_id = message.video.file_id
+    dump_ids = message.text.strip()
 
     try:
         supabase.table("courses").insert({
@@ -394,9 +387,10 @@ async def process_delivery_content(message: types.Message, state: FSMContext):
             "numeric_price":    data["numeric_price"],
             "bot2_text":        data["bot2_text"],
             "bot2_image_id":    data["bot2_image_id"],
-            "delivery_text":    delivery_text,
-            "delivery_file_id": delivery_file_id,
+            "delivery_text":    "✅ Payment verified! Here is your access.",
+            "dump_message_ids": dump_ids, 
         }).execute()
+        
         await message.answer(
             "🎉 <b>Course Added Successfully!</b>\n\n"
             f"📘 <b>{data['title']}</b> is now live.",
