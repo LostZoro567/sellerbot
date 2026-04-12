@@ -153,13 +153,13 @@ def _course_keyboard(course_id: str, wallet: float, price: float) -> InlineKeybo
 
 def _payment_keyboard(course_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📷  QR Code",        callback_data=f"pay:qr:{course_id}")],
-        [InlineKeyboardButton(text="🔵  Paytm / UPI",    callback_data=f"pay:paytm:{course_id}")],
-        [InlineKeyboardButton(text="🟦  PayPal",          callback_data=f"pay:paypal:{course_id}")],
-        [InlineKeyboardButton(text="🟠  Crypto (USDT)",   callback_data=f"pay:crypto:{course_id}")],
-        [InlineKeyboardButton(text="💬  Other Methods",   callback_data=f"pay:others:{course_id}")],
-        [InlineKeyboardButton(text="🎁  Refer & Earn",    url=f"https://t.me/{BOT1_USERNAME}?start=refer")],
-        [InlineKeyboardButton(text="⬅️  Back to Item",   callback_data=f"backcourse:{course_id}")],
+        [InlineKeyboardButton(text="🧾 QR Code ",        callback_data=f"pay:qr:{course_id}")],
+        [InlineKeyboardButton(text="💸 Paytm / UPI",    callback_data=f"pay:paytm:{course_id}")],
+        [InlineKeyboardButton(text="🌐 PayPal",          callback_data=f"pay:paypal:{course_id}")],
+        [InlineKeyboardButton(text="🪙 Crypto (USDT)",   callback_data=f"pay:crypto:{course_id}")],
+        [InlineKeyboardButton(text="💳 Other Methods",   callback_data=f"pay:others:{course_id}")],
+        [InlineKeyboardButton(text="🎁 Refer & Pay",    url=f"https://t.me/{BOT1_USERNAME}?start=refer")],
+        [InlineKeyboardButton(text="⬅️ Back",   callback_data=f"backcourse:{course_id}")],
     ])
 
 def _admin_keyboard(trans_id: str) -> InlineKeyboardMarkup:
@@ -470,7 +470,7 @@ async def back_to_payment_options(callback: types.CallbackQuery):
 PAYMENT_METHODS = {
     "qr": {
         "text": (
-            "📷 <b>QR Code Payment</b>\n\n"
+            "🧾 <b>QR Code Payment</b>\n\n"
             "Scan the QR code above to complete your payment.\n\n"
             "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
             "⏳ <i>Window closes in 15 minutes.</i>"
@@ -479,7 +479,7 @@ PAYMENT_METHODS = {
     },
     "paytm": {
         "text": (
-            "🔵 <b>Paytm / UPI Payment</b>\n\n"
+            "💸 <b>Paytm / UPI Payment</b>\n\n"
             "Send payment to the UPI ID below:\n\n"
             "🔑 UPI ID: <code>womp@ptyes</code>\n\n"
             "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
@@ -489,7 +489,7 @@ PAYMENT_METHODS = {
     },
     "paypal": {
         "text": (
-            "🟦 <b>PayPal Payment</b>\n\n"
+            "🌐 <b>PayPal Payment</b>\n\n"
             "Send payment to:\n\n"
             "📧 <code>Ankitmallick5790@gmail.com</code>\n\n"
             "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
@@ -499,7 +499,7 @@ PAYMENT_METHODS = {
     },
     "crypto": {
         "text": (
-            "🟠 <b>Crypto Payment — USDT (BEP20)</b>\n\n"
+            "🪙 <b>Crypto Payment — USDT (BEP20)</b>\n\n"
             "Send USDT to:\n\n"
             "👛 <code>0x1da04f30bdc147612a625b203217f50cdb84e2f6</code>\n\n"
             "⚠️ <i>Send on BEP20 network only!</i>\n\n"
@@ -510,7 +510,7 @@ PAYMENT_METHODS = {
     },
     "others": {
         "text": (
-            "💬 <b>Other Payment Methods</b>\n\n"
+            "💳 <b>Other Payment Methods</b>\n\n"
             "Message the admin directly for other payment methods.\n\n"
         ),
         "image": "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg",
