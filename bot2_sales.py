@@ -12,10 +12,10 @@ load_dotenv()
 BOT_TOKEN             = os.getenv("BOT2_TOKEN")
 ADMIN_ID              = int(os.getenv("ADMIN_ID"))
 BOT1_USERNAME         = os.getenv("BOT1_USERNAME", "YourGatewayBot")
+DUMP_CHAT_ID          = int(os.getenv("DUMP_CHAT_ID", "-1000000000000"))
 AUTO_DELETE_SECS      = 900
 REFERRAL_PERCENT      = 25
 PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
-DUMP_CHAT_ID = int(os.getenv("DUMP_CHAT_ID", "-1003913013704")) # Replace with your actual ID
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
@@ -153,10 +153,10 @@ def _course_keyboard(course_id: str, wallet: float, price: float) -> InlineKeybo
 
 def _payment_keyboard(course_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧾 Scan QR",        callback_data=f"pay:qr:{course_id}")],
-        [InlineKeyboardButton(text="💳  Paytm / UPI",    callback_data=f"pay:paytm:{course_id}")],
-        [InlineKeyboardButton(text="🌐  PayPal",          callback_data=f"pay:paypal:{course_id}")],
-        [InlineKeyboardButton(text="🪙  Crypto (USDT)",   callback_data=f"pay:crypto:{course_id}")],
+        [InlineKeyboardButton(text="📷  QR Code",        callback_data=f"pay:qr:{course_id}")],
+        [InlineKeyboardButton(text="🔵  Paytm / UPI",    callback_data=f"pay:paytm:{course_id}")],
+        [InlineKeyboardButton(text="🟦  PayPal",          callback_data=f"pay:paypal:{course_id}")],
+        [InlineKeyboardButton(text="🟠  Crypto (USDT)",   callback_data=f"pay:crypto:{course_id}")],
         [InlineKeyboardButton(text="💬  Other Methods",   callback_data=f"pay:others:{course_id}")],
         [InlineKeyboardButton(text="🎁  Refer & Earn",    url=f"https://t.me/{BOT1_USERNAME}?start=refer")],
         [InlineKeyboardButton(text="⬅️  Back to Item",   callback_data=f"backcourse:{course_id}")],
@@ -194,7 +194,6 @@ def _course_caption(course: dict) -> str:
     )
 
 async def _deliver_course(user_id: int, course_id: str):
-    # Fetch delivery_text and dump_message_ids from the database
     cr = supabase.table("courses").select("delivery_text, dump_message_ids").eq("course_id", course_id).execute()
     
     if not cr.data:
@@ -203,7 +202,6 @@ async def _deliver_course(user_id: int, course_id: str):
         
     del_text = cr.data[0].get("delivery_text") or "✅ Payment verified! Here are your materials:"
     
-    # 1. Send the intro text with the self-destruct warning
     sent_text = await bot.send_message(
         chat_id=user_id, 
         text=f"{del_text}\n\n⏳ <i>These files will self-destruct in 15 minutes.</i>",
@@ -212,24 +210,18 @@ async def _deliver_course(user_id: int, course_id: str):
     )
     asyncio.create_task(_auto_delete(user_id, sent_text.message_id))
 
-    # 2. Copy all the files/messages from the private storage channel
     dump_ids_str = cr.data[0].get("dump_message_ids")
     if dump_ids_str:
-        # Split the string by commas and remove extra spaces
         message_ids = [m.strip() for m in dump_ids_str.split(",") if m.strip()]
         
         for msg_id in message_ids:
             try:
-                # Copy the message natively (no "Forwarded from" tag)
                 sent_media = await bot.copy_message(
                     chat_id=user_id,
                     from_chat_id=DUMP_CHAT_ID,
                     message_id=int(msg_id)
                 )
-                # Apply the 15-minute auto-delete to every single copied file
                 asyncio.create_task(_auto_delete(user_id, sent_media.message_id))
-                
-                # Small delay to prevent hitting Telegram's flood limits
                 await asyncio.sleep(0.5) 
             except Exception as e:
                 print(f"Failed to deliver message {msg_id} from dump channel: {e}")
