@@ -351,6 +351,7 @@ async def back_to_course(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("buy:"))
 async def upsell_interceptor(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
+    user_id   = callback.from_user.id
     
     # 1. Skip upsell ONLY if they are already buying the ultimate "bundle_all"
     if course_id == "bundle_all":
@@ -360,14 +361,41 @@ async def upsell_interceptor(callback: types.CallbackQuery):
     res = supabase.table("courses").select("course_id, title, button_text").ilike("course_id", "bundle_%").execute()
     all_bundles = res.data
     
-    # 3. Filter out the specific item they are currently buying so we don't upsell them what they already have
+    # 3. Filter out the specific item they are currently buying
     bundles = [b for b in all_bundles if b["course_id"] != course_id]
     
-    # 4. If no *other* bundles exist, just go straight to payment
+    # 4. If no *other* bundles exist, skip straight to payment
     if not bundles:
         return await _show_payment_options(callback, course_id)
         
-    # 5. Create the dynamic upgrade menu
+    # 5. Create the side-by-side Yes/No buttons
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Yes", callback_data=f"show_upgrades:{course_id}"),
+        InlineKeyboardButton(text="❌ No", callback_data=f"continue_pay:{course_id}")
+    )
+    
+    # 6. SEND A NEW TEXT MESSAGE instead of editing the course photo
+    sent_msg = await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "🛑 <b>Wait! Special Upgrade Offer</b>\n\n"
+            "Did you know you can get multiple items at a massive discount by upgrading to a larger bundle?\n\n"
+            "Would you like to view our special upgrade options before you check out?"
+        ),
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+    asyncio.create_task(_auto_delete(user_id, sent_msg.message_id))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("show_upgrades:"))
+async def show_upgrade_options(callback: types.CallbackQuery):
+    course_id = callback.data.split(":", 1)[1]
+    
+    res = supabase.table("courses").select("course_id, title, button_text").ilike("course_id", "bundle_%").execute()
+    bundles = [b for b in res.data if b["course_id"] != course_id]
+    
     builder = InlineKeyboardBuilder()
     for b in bundles:
         display_name = b.get("button_text") or b["title"]
@@ -377,16 +405,16 @@ async def upsell_interceptor(callback: types.CallbackQuery):
         ))
         
     builder.row(InlineKeyboardButton(
-        text="➡️ No thanks, continue to checkout", 
+        text="➡️ Nevermind, continue to checkout", 
         callback_data=f"continue_pay:{course_id}"
     ))
     
     try:
-        await callback.message.edit_caption(
-            caption=(
-                "🛑 <b>Wait! Special Upgrade Offer</b>\n\n"
-                "Did you know you can get multiple items at a massive discount by upgrading to a larger bundle?\n\n"
-                "<i>Select a bundle below to view the offer, or skip to continue your current purchase.</i>"
+        # Edits the Yes/No message to show the list of bundles
+        await callback.message.edit_text(
+            text=(
+                "🎁 <b>Select an Upgrade</b>\n\n"
+                "Choose a bundle below to view the offer and switch your cart, or skip to continue with your original item."
             ),
             reply_markup=builder.as_markup(),
             parse_mode="HTML"
@@ -400,6 +428,9 @@ async def switch_course_view(callback: types.CallbackQuery):
     new_course_id = callback.data.split(":", 1)[1]
     user_id = callback.from_user.id
     
+    # Delete the text menu so it doesn't clutter the chat
+    await _safe_delete(callback.message.chat.id, callback.message.message_id)
+    
     res = supabase.table("courses").select("*").eq("course_id", new_course_id).execute()
     if not res.data:
         return await callback.answer("❌ Bundle not found.", show_alert=True)
@@ -411,22 +442,25 @@ async def switch_course_view(callback: types.CallbackQuery):
     _cancel_pending(user_id)
     _create_transaction(user_id, new_course_id)
     
-    try:
-        await callback.message.edit_media(
-            media=InputMediaPhoto(
-                media=course["bot2_image_id"],
-                caption=_course_caption(course),
-                parse_mode="HTML"
-            ),
-            reply_markup=_course_keyboard(new_course_id, wallet, price)
-        )
-    except Exception:
-        pass
+    # Send the new bundle photo details
+    sent = await bot.send_photo(
+        chat_id=user_id,
+        photo=course["bot2_image_id"],
+        caption=_course_caption(course),
+        reply_markup=_course_keyboard(new_course_id, wallet, price),
+        parse_mode="HTML"
+    )
+    asyncio.create_task(_auto_delete(user_id, sent.message_id))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("continue_pay:"))
 async def bypass_upsell(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
+    
+    # Delete the Yes/No message or Upgrade Menu so it doesn't clutter the chat
+    await _safe_delete(callback.message.chat.id, callback.message.message_id)
+    
+    # Show the payment options directly
     await _show_payment_options(callback, course_id)
 
 async def _show_payment_options(callback: types.CallbackQuery, course_id: str):
