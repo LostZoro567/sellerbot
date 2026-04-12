@@ -345,7 +345,7 @@ async def back_to_course(callback: types.CallbackQuery):
     await callback.answer()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BUY NOW & DYNAMIC UPSELL
+# BUY NOW & 1-CLICK UPSELL
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("buy:"))
@@ -357,31 +357,31 @@ async def upsell_interceptor(callback: types.CallbackQuery):
     if course_id == "bundle_all":
         return await _show_payment_options(callback, course_id)
         
-    # 2. Fetch all bundles from the database
-    res = supabase.table("courses").select("course_id, title, button_text").ilike("course_id", "bundle_%").execute()
-    all_bundles = res.data
+    # 2. Fetch the "bundle_all" details from the database
+    res = supabase.table("courses").select("title, price").eq("course_id", "bundle_all").execute()
     
-    # 3. Filter out the specific item they are currently buying
-    bundles = [b for b in all_bundles if b["course_id"] != course_id]
-    
-    # 4. If no *other* bundles exist, skip straight to payment
-    if not bundles:
+    # 3. If "bundle_all" hasn't been created yet, skip the upsell
+    if not res.data:
         return await _show_payment_options(callback, course_id)
         
-    # 5. Create the side-by-side Yes/No buttons
+    bundle_all = res.data[0]
+    bundle_price = bundle_all.get("price", "₹1499")
+    bundle_title = bundle_all.get("title", "The Ultimate Collection")
+    
+    # 4. Create the side-by-side Yes/No buttons
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Yes", callback_data=f"show_upgrades:{course_id}"),
-        InlineKeyboardButton(text="❌ No", callback_data=f"continue_pay:{course_id}")
+        InlineKeyboardButton(text="❌ No", callback_data=f"continue_pay:{course_id}"),
+        InlineKeyboardButton(text="✅ Yes", callback_data="upgrade_to_all")
     )
     
-    # 6. SEND A NEW TEXT MESSAGE instead of editing the course photo
+    # 5. SEND THE UPSELL OFFER
     sent_msg = await bot.send_message(
         chat_id=user_id,
         text=(
-            "🛑 <b>Wait! Special Upgrade Offer</b>\n\n"
-            "Did you know you can get multiple items at a massive discount by upgrading to a larger bundle?\n\n"
-            "Would you like to view our special upgrade options before you check out?"
+            "<b>Special Offer Available ✅</b>\n\n"
+            f"Instead of buying just one item, you can unlock <b>{bundle_title}</b> with ALL our files for only <b>{bundle_price}</b>!\n\n𝐑𝐞𝐠𝐮𝐥𝐚𝐫 𝐏𝐫𝐢𝐜𝐞 : <del>3,999₹ / 60$</del>\nOffer Price : 1,499₹ / 22$"
+            "Would you like to Buy All VIP Files?"
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -389,78 +389,22 @@ async def upsell_interceptor(callback: types.CallbackQuery):
     asyncio.create_task(_auto_delete(user_id, sent_msg.message_id))
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("show_upgrades:"))
-async def show_upgrade_options(callback: types.CallbackQuery):
-    course_id = callback.data.split(":", 1)[1]
-    
-    res = supabase.table("courses").select("course_id, title, button_text").ilike("course_id", "bundle_%").execute()
-    bundles = [b for b in res.data if b["course_id"] != course_id]
-    
-    builder = InlineKeyboardBuilder()
-    for b in bundles:
-        display_name = b.get("button_text") or b["title"]
-        builder.row(InlineKeyboardButton(
-            text=f"🎁 Upgrade to {display_name}", 
-            callback_data=f"switch_to:{b['course_id']}"
-        ))
-        
-    builder.row(InlineKeyboardButton(
-        text="➡️ Nevermind, continue to checkout", 
-        callback_data=f"continue_pay:{course_id}"
-    ))
-    
-    try:
-        # Edits the Yes/No message to show the list of bundles
-        await callback.message.edit_text(
-            text=(
-                "🎁 <b>Select an Upgrade</b>\n\n"
-                "Choose a bundle below to view the offer and switch your cart, or skip to continue with your original item."
-            ),
-            reply_markup=builder.as_markup(),
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("switch_to:"))
-async def switch_course_view(callback: types.CallbackQuery):
-    new_course_id = callback.data.split(":", 1)[1]
-    user_id = callback.from_user.id
-    
-    # Delete the text menu so it doesn't clutter the chat
+@dp.callback_query(F.data == "upgrade_to_all")
+async def process_upgrade_to_all(callback: types.CallbackQuery):
+    # Delete the Yes/No message so it doesn't clutter the chat
     await _safe_delete(callback.message.chat.id, callback.message.message_id)
     
-    res = supabase.table("courses").select("*").eq("course_id", new_course_id).execute()
-    if not res.data:
-        return await callback.answer("❌ Bundle not found.", show_alert=True)
-        
-    course = res.data[0]
-    price  = round(float(course.get("numeric_price", 0)), 2)
-    wallet = _get_wallet(user_id)
-    
-    _cancel_pending(user_id)
-    _create_transaction(user_id, new_course_id)
-    
-    # Send the new bundle photo details
-    sent = await bot.send_photo(
-        chat_id=user_id,
-        photo=course["bot2_image_id"],
-        caption=_course_caption(course),
-        reply_markup=_course_keyboard(new_course_id, wallet, price),
-        parse_mode="HTML"
-    )
-    asyncio.create_task(_auto_delete(user_id, sent.message_id))
-    await callback.answer()
+    # Send them directly to the payment options for bundle_all
+    await _show_payment_options(callback, "bundle_all")
 
 @dp.callback_query(F.data.startswith("continue_pay:"))
 async def bypass_upsell(callback: types.CallbackQuery):
     course_id = callback.data.split(":", 1)[1]
     
-    # Delete the Yes/No message or Upgrade Menu so it doesn't clutter the chat
+    # Delete the Yes/No message
     await _safe_delete(callback.message.chat.id, callback.message.message_id)
     
-    # Show the payment options directly
+    # Show the payment options directly for the original item
     await _show_payment_options(callback, course_id)
 
 async def _show_payment_options(callback: types.CallbackQuery, course_id: str):
