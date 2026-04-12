@@ -154,8 +154,8 @@ async def handle_start(message: types.Message, command: CommandObject):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="🎁 View Special Discounted Bundles",
-        callback_data="show_bundles_menu"
+        text="Buy All <del>3,𝟗𝟗𝟗₹ / 60$</del> ₹1,499 / 22$", 
+        url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
     ))
 
     wallet      = _get_wallet(user_id)
