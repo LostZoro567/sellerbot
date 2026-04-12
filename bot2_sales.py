@@ -307,7 +307,8 @@ async def handle_course_selection(message: types.Message, command: CommandObject
         photo=course["bot2_image_id"],
         caption=_course_caption(course),
         reply_markup=_course_keyboard(course_id, wallet, price),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        protect_content=True
     )
     
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id))
@@ -426,7 +427,8 @@ async def _show_payment_options(callback: types.CallbackQuery, course_id: str):
                 "⏳ <i>This window closes in 15 minutes.</i>"
             ),
             reply_markup=_payment_keyboard(course_id),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            protect_content=True
         )
         asyncio.create_task(_auto_delete(user_id, sent.message_id))
     except Exception:
