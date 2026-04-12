@@ -141,7 +141,7 @@ async def handle_start(message: types.Message, command: CommandObject):
                 except Exception:
                     pass
 
-    all_items = supabase.table("courses").select("course_id, title, button_text").execute().data
+    all_items = supabase.table("courses").select("course_id, title, button_text").order("created_at").execute().data
     regular_courses = [c for c in all_items if not c["course_id"].startswith("bundle_")]
 
     builder = InlineKeyboardBuilder()
@@ -175,7 +175,7 @@ async def handle_start(message: types.Message, command: CommandObject):
 
 @dp.callback_query(F.data == "show_bundles_menu")
 async def menu_show_bundles(callback: types.CallbackQuery):
-    all_items = supabase.table("courses").select("course_id, title, button_text").execute().data
+    all_items = supabase.table("courses").select("course_id, title, button_text").order("created_at").execute().data
     bundles = [c for c in all_items if c["course_id"].startswith("bundle_")]
 
     builder = InlineKeyboardBuilder()
@@ -205,7 +205,7 @@ async def menu_show_bundles(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_main_menu")
 async def menu_back_to_main(callback: types.CallbackQuery):
-    all_items = supabase.table("courses").select("course_id, title, button_text").execute().data
+    all_items = supabase.table("courses").select("course_id, title, button_text").order("created_at").execute().data
     regular_courses = [c for c in all_items if not c["course_id"].startswith("bundle_")]
 
     builder = InlineKeyboardBuilder()
