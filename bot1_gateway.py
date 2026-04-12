@@ -149,7 +149,7 @@ async def handle_start(message: types.Message, command: CommandObject):
     for c in regular_courses:
         display_name = c.get("button_text") or c["title"]
         builder.row(InlineKeyboardButton(
-            text=f"📘 {display_name}",
+            text=f"{display_name}",
             url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
         ))
 
@@ -214,7 +214,7 @@ async def menu_back_to_main(callback: types.CallbackQuery):
     for c in regular_courses:
         display_name = c.get("button_text") or c["title"]
         builder.row(InlineKeyboardButton(
-            text=f"📘 {display_name}",
+            text=f"{display_name}",
             url=f"https://t.me/{BOT2_USERNAME}?start={c['course_id']}"
         ))
 
