@@ -154,7 +154,7 @@ async def handle_start(message: types.Message, command: CommandObject):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="Buy All <del>3,𝟗𝟗𝟗₹ / 60$</del> ₹1,499 / 22$", 
+        text="Buy All [₹1,499 / 22$]", 
         url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
     ))
 
@@ -218,7 +218,7 @@ async def menu_back_to_main(callback: types.CallbackQuery):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="Buy All <del>3,𝟗𝟗𝟗₹ / 60$</del> ₹1,499 / 22$", 
+        text="Buy All [₹1,499 / 22$]", 
         url=f"https://t.me/{BOT2_USERNAME}?start=bundle_all"
     ))
 
