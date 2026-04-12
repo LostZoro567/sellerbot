@@ -31,7 +31,7 @@ class AddCourseFSM(StatesGroup):
     waiting_for_price_usd        = State()
     waiting_for_bot2_text        = State()
     waiting_for_bot2_image       = State()
-    waiting_for_dump_ids         = State() # NEW
+    waiting_for_dump_ids         = State()
 
 class AddBundleFSM(StatesGroup):
     waiting_for_bundle_id        = State()
@@ -40,7 +40,7 @@ class AddBundleFSM(StatesGroup):
     waiting_for_price_usd        = State()
     waiting_for_bot2_text        = State()
     waiting_for_bot2_image       = State()
-    waiting_for_dump_ids         = State() # NEW
+    waiting_for_dump_ids         = State()
 
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
@@ -165,8 +165,8 @@ async def handle_start(message: types.Message, command: CommandObject):
     await message.answer_photo(
         photo=WELCOME_PHOTO,
         caption=(
-            "🛒 <b>Telegram's Best Collection!</b>\n\n"
-            "🔥 Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n✨ <b>Buy All Collection</b> :\n<del>Regular Price : 3,599₹ / 60$</del> ❌\n\nBundle Offer = 1,499₹ / 22$ ✅" + wallet_note
+            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
+            "Browse the courses below or check out our special bundles." + wallet_note
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -223,8 +223,8 @@ async def menu_back_to_main(callback: types.CallbackQuery):
 
     await callback.message.edit_caption(
         caption=(
-            "🛒 <b>Telegram's Best Collection!</b>\n\n"
-            "🔥 Today's “Bundle” Offer : \nC||P + R||P :- 699₹ / 10$ \n\n✨ <b>Buy All Collection</b> :\n<del>Regular Price : 3,599₹ / 60$</del> ❌\n\nBundle Offer = 1,499₹ / 22$ ✅" + wallet_note
+            "🎓 <b>Welcome to the Private Portal!</b>\n\n"
+            "Browse the courses below or check out our special bundles." + wallet_note
         ),
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -448,129 +448,6 @@ async def process_bundle_price_inr(message: types.Message, state: FSMContext):
         return await message.answer("❌ Please enter a valid number.", parse_mode="HTML")
         
     await state.update_data(numeric_price=numeric)
-    await message.answer("✅ INR Price saved!\n\n🛠 <b>Step 4 of 7 — Price (USD)</b>\nEnter the price in <b>$</b>.", parse_mode="HTML")
-    await state.set_state(AddBundleFSM.waiting_for_price_usd)
-
-@dp.message(AddBundleFSM.waiting_for_price_usd)
-async def process_bundle_price_usd(message: types.Message, state: FSMContext):
-    try:
-        usd_val = float(message.text.strip().replace("$", "").replace(",", ""))
-    except ValueError:
-        return await message.answer("❌ Please enter a valid number.", parse_mode="HTML")
-    
-    data = await state.get_data()
-    display_price = f"₹{data['numeric_price']:g} / ${usd_val:g}"
-    await state.update_data(price=display_price)
-    
-    await message.answer(
-        f"✅ Price saved as: <b>{display_price}</b>\n\n"
-        "🛠 <b>Step 5 of 7 — Sales Description</b>\n\n"
-        "Enter the bundle text description for the sales bot:",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddBundleFSM.waiting_for_bot2_text)
-
-@dp.message(AddBundleFSM.waiting_for_bot2_text)
-async def process_bundle_bot2_text(message: types.Message, state: FSMContext):
-    await state.update_data(bot2_text=message.text.strip())
-    await message.answer(
-        "✅ Description saved!\n\n"
-        "🛠 <b>Step 6 of 7 — Bundle Thumbnail URL</b>\n\n"
-        "Paste a public image URL for the bundle thumbnail.",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddBundleFSM.waiting_for_bot2_image)
-
-@dp.message(AddBundleFSM.waiting_for_bot2_image)
-async def process_bundle_bot2_image(message: types.Message, state: FSMContext):
-    await state.update_data(bot2_image_id=message.text.strip())
-    await message.answer(
-        "✅ Thumbnail saved!\n\n"
-        "🛠 <b>Step 7 of 7 — Bundle Delivery Content</b>\n\n"
-        "Send what the buyer receives after payment (zip file, text links, etc.):",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddBundleFSM.waiting_for_delivery_content)
-
-@dp.message(AddBundleFSM.waiting_for_delivery_content)
-async def process_bundle_delivery_content(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    delivery_text = message.text or message.caption or "✅ Payment verified! Here is your bundle."
-    delivery_file_id = None
-
-    if message.document:
-        delivery_file_id = message.document.file_id
-    elif message.video:
-        delivery_file_id = message.video.file_id
-
-    try:
-        supabase.table("courses").insert({
-            "course_id":        data["course_id"],
-            "title":            data["title"],
-            "price":            data["price"],
-            "numeric_price":    data["numeric_price"],
-            "bot2_text":        data["bot2_text"],
-            "bot2_image_id":    data["bot2_image_id"],
-            "delivery_text":    delivery_text,
-            "delivery_file_id": delivery_file_id,
-        }).execute()
-        await message.answer(
-            "🎉 <b>Bundle Added Successfully!</b>\n\n"
-            f"📦 <b>{data['title']}</b> is now live.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await message.answer(f"❌ <b>Database error:</b>\n\n<code>{e}</code>", parse_mode="HTML")
-
-    await state.clear()
-
-# ── ADMIN: /broadcast ──────────────────────────────────────────────────────────
-
-@dp.message(Command("addbundle"))
-async def cmd_addbundle(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer(
-        "🛠 <b>Add New Bundle — Step 1 of 7</b>\n\n"
-        "Enter a unique <b>internal ID</b> for this bundle.\n"
-        "_(I will automatically add 'bundle_' to the front of whatever you type here.)_",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddBundleFSM.waiting_for_bundle_id)
-
-@dp.message(AddBundleFSM.waiting_for_bundle_id)
-async def process_bundle_id(message: types.Message, state: FSMContext):
-    raw_id = message.text.strip().lower().replace(" ", "_")
-    bundle_id = raw_id if raw_id.startswith("bundle_") else f"bundle_{raw_id}"
-    
-    await state.update_data(course_id=bundle_id)
-    await message.answer(
-        f"✅ ID saved as: <code>{bundle_id}</code>\n\n"
-        "🛠 <b>Step 2 of 7 — Display Title</b>\n\n"
-        "Enter the title users will see.\n_(e.g. <code>Mega Pack: Python + SQL</code>)_",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddBundleFSM.waiting_for_title)
-
-@dp.message(AddBundleFSM.waiting_for_title)
-async def process_bundle_title(message: types.Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
-    await message.answer(
-        "✅ Title saved!\n\n"
-        "🛠 <b>Step 3 of 7 — Price (INR)</b>\n\n"
-        "Enter the bundle price in <b>₹</b> as a plain number.",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddBundleFSM.waiting_for_price_inr)
-
-@dp.message(AddBundleFSM.waiting_for_price_inr)
-async def process_bundle_price_inr(message: types.Message, state: FSMContext):
-    try:
-        numeric = float(message.text.strip().replace("₹", "").replace(",", ""))
-    except ValueError:
-        return await message.answer("❌ Please enter a valid number.", parse_mode="HTML")
-        
-    await state.update_data(numeric_price=numeric)
     await message.answer(
         "✅ INR Price saved!\n\n"
         "🛠 <b>Step 4 of 7 — Price (USD)</b>\n"
@@ -648,6 +525,50 @@ async def process_bundle_dump_ids(message: types.Message, state: FSMContext):
         await message.answer(f"❌ <b>Database error:</b>\n\n<code>{e}</code>", parse_mode="HTML")
 
     await state.clear()
+
+# ── ADMIN: /broadcast ──────────────────────────────────────────────────────────
+
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "📢 <b>Broadcast Mode</b>\n\n"
+        "Send the message you want delivered to all users.\n"
+        "Supports text, photos, and videos.\n\n"
+        "⚠️ <i>Inactive (blocked) accounts are automatically removed from the database.</i>",
+        parse_mode="HTML"
+    )
+    await state.set_state(BroadcastFSM.waiting_for_message)
+
+@dp.message(BroadcastFSM.waiting_for_message)
+async def execute_broadcast(message: types.Message, state: FSMContext):
+    await state.clear()
+    status_msg = await message.answer("⏳ Collecting user list…")
+
+    rows         = supabase.table("users").select("telegram_user_id").execute().data
+    unique_users = {r["telegram_user_id"] for r in rows}
+
+    success = fail = 0
+    for uid in unique_users:
+        try:
+            await message.copy_to(chat_id=uid)
+            success += 1
+            await asyncio.sleep(0.05)
+        except TelegramForbiddenError:
+            fail += 1
+            supabase.table("transactions").delete().eq("telegram_user_id", uid).execute()
+            supabase.table("referrals").delete().eq("referred_user_id", uid).execute()
+            supabase.table("users").delete().eq("telegram_user_id", uid).execute()
+        except Exception:
+            fail += 1
+
+    await status_msg.edit_text(
+        "✅ <b>Broadcast Complete!</b>\n\n"
+        f"📬 Delivered to:          <b>{success}</b> users\n"
+        f"🗑 Dead accounts removed: <b>{fail}</b>",
+        parse_mode="HTML"
+    )
 
 # ── ADMIN: /stats ──────────────────────────────────────────────────────────────
 
