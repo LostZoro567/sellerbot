@@ -517,7 +517,7 @@ PAYMENT_METHODS = {
         ),
         "image": "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg",
         "extra_buttons": [
-            [InlineKeyboardButton(text="👤 Message Admin", url="https://t.me/YourAdminUsername")]
+            [InlineKeyboardButton(text="👤 Message Admin", url="https://t.me/ProSeller_69")]
         ],
     },
 }
