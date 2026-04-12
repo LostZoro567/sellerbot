@@ -194,26 +194,45 @@ def _course_caption(course: dict) -> str:
     )
 
 async def _deliver_course(user_id: int, course_id: str):
-    cr = supabase.table("courses").select("delivery_text, delivery_file_id").eq("course_id", course_id).execute()
+    # Fetch delivery_text and dump_message_ids from the database
+    cr = supabase.table("courses").select("delivery_text, dump_message_ids").eq("course_id", course_id).execute()
+    
     if not cr.data:
         await bot.send_message(user_id, "✅ Payment approved! Contact support for your materials.")
         return
         
-    del_text    = cr.data[0].get("delivery_text") or "✅ Here is your material."
-    del_file_id = cr.data[0].get("delivery_file_id")
+    del_text = cr.data[0].get("delivery_text") or "✅ Payment verified! Here are your materials:"
+    
+    # 1. Send the intro text with the self-destruct warning
+    sent_text = await bot.send_message(
+        chat_id=user_id, 
+        text=f"{del_text}\n\n⏳ <i>These files will self-destruct in 15 minutes.</i>",
+        parse_mode="HTML", 
+        disable_web_page_preview=True
+    )
+    asyncio.create_task(_auto_delete(user_id, sent_text.message_id))
 
-    msg_text = f"{del_text}\n\n⏳ <i>This message self-destructs in 15 minutes.</i>"
-    if del_file_id:
-        sent = await bot.send_document(
-            chat_id=user_id, document=del_file_id,
-            caption=msg_text, parse_mode="HTML"
-        )
-    else:
-        sent = await bot.send_message(
-            chat_id=user_id, text=msg_text,
-            parse_mode="HTML", disable_web_page_preview=True
-        )
-    asyncio.create_task(_auto_delete(user_id, sent.message_id))
+    # 2. Copy all the files/messages from the private storage channel
+    dump_ids_str = cr.data[0].get("dump_message_ids")
+    if dump_ids_str:
+        # Split the string by commas and remove extra spaces
+        message_ids = [m.strip() for m in dump_ids_str.split(",") if m.strip()]
+        
+        for msg_id in message_ids:
+            try:
+                # Copy the message natively (no "Forwarded from" tag)
+                sent_media = await bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=DUMP_CHAT_ID,
+                    message_id=int(msg_id)
+                )
+                # Apply the 15-minute auto-delete to every single copied file
+                asyncio.create_task(_auto_delete(user_id, sent_media.message_id))
+                
+                # Small delay to prevent hitting Telegram's flood limits
+                await asyncio.sleep(0.5) 
+            except Exception as e:
+                print(f"Failed to deliver message {msg_id} from dump channel: {e}")
 
 async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
     await asyncio.sleep(960) 
