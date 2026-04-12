@@ -380,7 +380,7 @@ async def upsell_interceptor(callback: types.CallbackQuery):
         chat_id=user_id,
         text=(
             "<b>Special Offer Available ✅</b>\n\n"
-            f"Instead of buying just one item, you can unlock <b>{bundle_title}</b> with ALL our files for only <b>{bundle_price}</b>!\n\n𝐑𝐞𝐠𝐮𝐥𝐚𝐫 𝐏𝐫𝐢𝐜𝐞 : <del>3,999₹ / 60$</del>\nOffer Price : 1,499₹ / 22$"
+            f"Instead of buying just one item, you can unlock <b>{bundle_title}</b> with ALL our files for only <b>{bundle_price}</b>!\n\n𝐑𝐞𝐠𝐮𝐥𝐚𝐫 𝐏𝐫𝐢𝐜𝐞 : <del>3,999₹ / 60$</del>\nOffer Price : 1,499₹ / 22$\n\n"
             "Would you like to Buy All VIP Files?"
         ),
         reply_markup=builder.as_markup(),
