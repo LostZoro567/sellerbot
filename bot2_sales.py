@@ -250,7 +250,7 @@ async def _recovery_notifications(user_id: int, course_id: str, course_title: st
     if not check.data:
         kb = InlineKeyboardBuilder()
         kb.row(InlineKeyboardButton(text="💳 Resume Purchase", callback_data=f"buy:{course_id}"))
-        kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/YourAdminUsername"))
+        kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/ProSeller_69"))
         
         await bot.send_message(
             chat_id=user_id,
