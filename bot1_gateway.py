@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject, Command
-from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -46,6 +46,10 @@ class AddBundleFSM(StatesGroup):
 
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
+
+class DBroadcastFSM(StatesGroup):
+    waiting_for_video       = State()
+    waiting_for_button_text = State()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -598,6 +602,106 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
+# ── ADMIN: /dbroadcast ─────────────────────────────────────────────────────────
+
+@dp.message(Command("dbroadcast"))
+async def cmd_dbroadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "📹 <b>Delete-Broadcast Mode</b>\n\n"
+        "Send the <b>video</b> you want to broadcast to all users.\n\n"
+        "⚠️ <i>Broadcast messages will auto-delete from every user's chat after 15 minutes.</i>",
+        parse_mode="HTML"
+    )
+    await state.set_state(DBroadcastFSM.waiting_for_video)
+
+@dp.message(DBroadcastFSM.waiting_for_video, F.video)
+async def dbroadcast_got_video(message: types.Message, state: FSMContext):
+    await state.update_data(
+        video_file_id=message.video.file_id,
+        caption=message.caption or ""
+    )
+    await message.answer(
+        "✅ <b>Video received!</b>\n\n"
+        "Now enter the <b>inline button label</b>.\n"
+        "<i>(e.g. <code>🛒 View All Courses</code>)</i>",
+        parse_mode="HTML"
+    )
+    await state.set_state(DBroadcastFSM.waiting_for_button_text)
+
+@dp.message(DBroadcastFSM.waiting_for_video)
+async def dbroadcast_wrong_type(message: types.Message):
+    await message.answer(
+        "❌ <b>That's not a video.</b>\n\n"
+        "Please send a <b>video file</b> (not a photo, document, or text).",
+        parse_mode="HTML"
+    )
+
+@dp.message(DBroadcastFSM.waiting_for_button_text)
+async def dbroadcast_execute(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+
+    button_text   = message.text.strip()
+    video_file_id = data["video_file_id"]
+    caption       = data["caption"]
+
+    bot_info  = await bot.get_me()
+    start_url = f"https://t.me/{bot_info.username}?start="
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=button_text, url=start_url)
+    ]])
+
+    status_msg = await message.answer("⏳ Broadcasting delete-broadcast to all users…")
+
+    rows         = supabase.table("users").select("telegram_user_id").execute().data
+    unique_users = {r["telegram_user_id"] for r in rows}
+
+    success       = 0
+    fail          = 0
+    sent_messages = []   # (chat_id, message_id)
+
+    for uid in unique_users:
+        try:
+            sent = await bot.send_video(
+                chat_id=uid,
+                video=video_file_id,
+                caption=caption or None,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            sent_messages.append((uid, sent.message_id))
+            success += 1
+            await asyncio.sleep(0.05)
+        except TelegramForbiddenError:
+            fail += 1
+            supabase.table("transactions").delete().eq("telegram_user_id", uid).execute()
+            supabase.table("referrals").delete().eq("referred_user_id", uid).execute()
+            supabase.table("users").delete().eq("telegram_user_id", uid).execute()
+        except Exception:
+            fail += 1
+
+    await status_msg.edit_text(
+        "✅ <b>Delete-Broadcast Complete!</b>\n\n"
+        f"📬 Delivered to:          <b>{success}</b> users\n"
+        f"🗑 Dead accounts removed: <b>{fail}</b>\n\n"
+        f"⏳ All messages will auto-delete in <b>15 minutes</b>.",
+        parse_mode="HTML"
+    )
+
+    # Schedule mass deletion of all sent messages after 15 min
+    async def _delete_all_broadcast():
+        await asyncio.sleep(AUTO_DELETE_SECS)
+        for chat_id, msg_id in sent_messages:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass
+
+    asyncio.create_task(_delete_all_broadcast())
+
 # ── ADMIN: /stats ──────────────────────────────────────────────────────────────
 
 @dp.message(Command("stats"))
@@ -605,21 +709,133 @@ async def cmd_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    total_users   = len(supabase.table("users").select("telegram_user_id").execute().data)
-    total_sales   = len(supabase.table("transactions").select("id").eq("status", "approved").execute().data)
-    total_refs    = len(supabase.table("referrals").select("id").execute().data)
-    paid_refs     = len(supabase.table("referrals").select("id").eq("status", "purchased").execute().data)
-    total_courses = len(supabase.table("courses").select("course_id").execute().data)
+    thinking = await message.answer("⏳ Crunching the numbers…")
 
-    await message.answer(
-        "📊 <b>Bot Statistics</b>\n\n"
-        f"👥 Total Users:          <b>{total_users}</b>\n"
-        f"✅ Approved Sales:       <b>{total_sales}</b>\n"
-        f"📚 Courses/Bundles:      <b>{total_courses}</b>\n"
-        f"🔗 Total Referrals:      <b>{total_refs}</b>\n"
-        f"💰 Referrals → Purchase: <b>{paid_refs}</b>",
-        parse_mode="HTML"
+    # ── Users ──────────────────────────────────────────────────────────────────
+    total_users = len(supabase.table("users").select("telegram_user_id").execute().data)
+
+    # ── Transactions ───────────────────────────────────────────────────────────
+    approved_txs = supabase.table("transactions") \
+        .select("amount_paid, course_id, wallet_used, payment_type") \
+        .eq("status", "approved").execute().data
+
+    awaiting_txs = supabase.table("transactions") \
+        .select("id").eq("status", "awaiting_approval").execute().data
+
+    total_approved  = len(approved_txs)
+    pending_count   = len(awaiting_txs)
+    total_revenue   = sum(float(tx.get("amount_paid") or 0) for tx in approved_txs)
+
+    # Wallet-paid vs screenshot-paid breakdown
+    wallet_paid_count = len([tx for tx in approved_txs if tx.get("payment_type") == "wallet"])
+    screenshot_count  = total_approved - wallet_paid_count
+
+    total_wallet_used_in_sales = sum(
+        float(tx.get("wallet_used") or 0) for tx in approved_txs
     )
+
+    # ── Top selling course ─────────────────────────────────────────────────────
+    course_sales: dict = {}
+    for tx in approved_txs:
+        cid = tx.get("course_id", "unknown")
+        course_sales[cid] = course_sales.get(cid, 0) + 1
+
+    if course_sales:
+        top_course_id    = max(course_sales, key=course_sales.get)
+        top_course_count = course_sales[top_course_id]
+        # Fetch readable title
+        tc_row = supabase.table("courses").select("title").eq("course_id", top_course_id).execute()
+        top_course_name  = tc_row.data[0]["title"] if tc_row.data else top_course_id
+    else:
+        top_course_name  = "N/A"
+        top_course_count = 0
+
+    # ── Referrals ──────────────────────────────────────────────────────────────
+    all_refs = supabase.table("referrals").select("referrer_id, status").execute().data
+
+    total_refs       = len(all_refs)
+    converted_refs   = len([r for r in all_refs if r["status"] == "purchased"])
+    unique_referrers = len(set(r["referrer_id"] for r in all_refs))
+
+    # Top referrer (most referred users)
+    referrer_counts: dict = {}
+    for r in all_refs:
+        rid = r["referrer_id"]
+        referrer_counts[rid] = referrer_counts.get(rid, 0) + 1
+
+    if referrer_counts:
+        top_referrer_id    = max(referrer_counts, key=referrer_counts.get)
+        top_referrer_count = referrer_counts[top_referrer_id]
+    else:
+        top_referrer_id    = None
+        top_referrer_count = 0
+
+    # ── Wallet Economy ─────────────────────────────────────────────────────────
+    commissions = supabase.table("referral_commissions") \
+        .select("commission_amt").execute().data
+    total_commission_paid = sum(float(c.get("commission_amt") or 0) for c in commissions)
+
+    wallet_rows    = supabase.table("users").select("wallet_balance").execute().data
+    total_wallet_held = sum(float(w.get("wallet_balance") or 0) for w in wallet_rows)
+
+    # ── Courses ────────────────────────────────────────────────────────────────
+    all_courses  = supabase.table("courses").select("course_id").execute().data
+    total_items  = len(all_courses)
+    bundle_count = len([c for c in all_courses if c["course_id"].startswith("bundle_")])
+    course_count = total_items - bundle_count
+
+    # ── Compose message ────────────────────────────────────────────────────────
+    lines = [
+        "📊 <b>Full Admin Statistics</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "👥 <b>USERS</b>",
+        f"   Total registered users:    <b>{total_users}</b>",
+        "",
+        "💰 <b>SALES &amp; REVENUE</b>",
+        f"   ✅ Approved sales:          <b>{total_approved}</b>",
+        f"   💵 Total revenue (INR):     <b>₹{total_revenue:,.2f}</b>",
+        f"   ⏳ Awaiting approval:       <b>{pending_count}</b>",
+        f"   📸 Screenshot-paid sales:   <b>{screenshot_count}</b>",
+        f"   💳 Wallet-paid sales:       <b>{wallet_paid_count}</b>",
+        f"   🏦 Wallet used in sales:    <b>₹{total_wallet_used_in_sales:,.2f}</b>",
+        "",
+        "🏆 <b>TOP SELLING ITEM</b>",
+        f"   📘 {top_course_name}",
+        f"   🔢 Sold {top_course_count} time(s)",
+        "",
+        "📚 <b>CATALOGUE</b>",
+        f"   Individual courses:         <b>{course_count}</b>",
+        f"   Bundles:                    <b>{bundle_count}</b>",
+        f"   Total items:                <b>{total_items}</b>",
+        "",
+        "🔗 <b>REFERRAL PROGRAM</b>",
+        f"   Total referral links used:  <b>{total_refs}</b>",
+        f"   Converted to purchase:      <b>{converted_refs}</b>",
+        f"   Active referrers:           <b>{unique_referrers}</b>",
+    ]
+
+    if top_referrer_id:
+        lines.append(
+            f"   🥇 Top referrer:           <code>{top_referrer_id}</code>  "
+            f"({top_referrer_count} referrals)"
+        )
+
+    lines += [
+        "",
+        "💸 <b>WALLET ECONOMY</b>",
+        f"   Total commissions paid:     <b>₹{total_commission_paid:,.2f}</b>",
+        f"   Wallet balance (all users): <b>₹{total_wallet_held:,.2f}</b>",
+        f"   Wallet-paid sales:          <b>{wallet_paid_count}</b>",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"💡 <b>Net cash collected:</b>  "
+        f"<b>₹{(total_revenue - total_wallet_used_in_sales):,.2f}</b>  "
+        f"<i>(revenue minus wallet discounts)</i>",
+    ]
+
+    await thinking.delete()
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
