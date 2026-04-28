@@ -1,4 +1,5 @@
 import asyncio
+import time
 import os
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
@@ -663,7 +664,7 @@ async def dbroadcast_execute(message: types.Message, state: FSMContext):
 
     success       = 0
     fail          = 0
-    sent_messages = []   # (chat_id, message_id)
+    sent_messages = []   # (chat_id, message_id, sent_at)
 
     for uid in unique_users:
         try:
@@ -674,7 +675,7 @@ async def dbroadcast_execute(message: types.Message, state: FSMContext):
                 reply_markup=kb,
                 parse_mode="HTML"
             )
-            sent_messages.append((uid, sent.message_id))
+            sent_messages.append((uid, sent.message_id, time.time()))
             success += 1
             await asyncio.sleep(0.05)
         except TelegramForbiddenError:
@@ -689,14 +690,18 @@ async def dbroadcast_execute(message: types.Message, state: FSMContext):
         "✅ <b>Delete-Broadcast Complete!</b>\n\n"
         f"📬 Delivered to:          <b>{success}</b> users\n"
         f"🗑 Dead accounts removed: <b>{fail}</b>\n\n"
-        f"⏳ All messages will auto-delete in <b>15 minutes</b>.",
+        f"⏳ Each message will auto-delete <b>15 min after it was sent</b>.",
         parse_mode="HTML"
     )
 
-    # Schedule mass deletion of all sent messages after 15 min
+    # Delete each message exactly AUTO_DELETE_SECS after IT was sent.
+    # Since sent_messages is in send order, remaining wait naturally shrinks
+    # as we iterate — no 10k concurrent tasks needed.
     async def _delete_all_broadcast():
-        await asyncio.sleep(AUTO_DELETE_SECS)
-        for chat_id, msg_id in sent_messages:
+        for chat_id, msg_id, sent_at in sent_messages:
+            remaining = AUTO_DELETE_SECS - (time.time() - sent_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=msg_id)
             except Exception:
