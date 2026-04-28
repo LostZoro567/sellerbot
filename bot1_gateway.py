@@ -616,12 +616,22 @@ async def cmd_dbroadcast(message: types.Message, state: FSMContext):
     )
     await state.set_state(DBroadcastFSM.waiting_for_video)
 
-@dp.message(DBroadcastFSM.waiting_for_video, F.video)
+@dp.message(DBroadcastFSM.waiting_for_video)
 async def dbroadcast_got_video(message: types.Message, state: FSMContext):
-    await state.update_data(
-        video_file_id=message.video.file_id,
-        caption=message.caption or ""
-    )
+    # Accept both compressed video and video sent as a file/document
+    if message.video:
+        file_id = message.video.file_id
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("video/"):
+        file_id = message.document.file_id
+    else:
+        return await message.answer(
+            "❌ <b>That's not a video.</b>\n\n"
+            "Please send a <b>video file</b>.\n"
+            "<i>Tip: send it without compression if possible.</i>",
+            parse_mode="HTML"
+        )
+
+    await state.update_data(video_file_id=file_id, caption=message.caption or "")
     await message.answer(
         "✅ <b>Video received!</b>\n\n"
         "Now enter the <b>inline button label</b>.\n"
@@ -629,14 +639,6 @@ async def dbroadcast_got_video(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(DBroadcastFSM.waiting_for_button_text)
-
-@dp.message(DBroadcastFSM.waiting_for_video)
-async def dbroadcast_wrong_type(message: types.Message):
-    await message.answer(
-        "❌ <b>That's not a video.</b>\n\n"
-        "Please send a <b>video file</b> (not a photo, document, or text).",
-        parse_mode="HTML"
-    )
 
 @dp.message(DBroadcastFSM.waiting_for_button_text)
 async def dbroadcast_execute(message: types.Message, state: FSMContext):
@@ -734,21 +736,19 @@ async def cmd_stats(message: types.Message):
         float(tx.get("wallet_used") or 0) for tx in approved_txs
     )
 
-    # ── Top selling course ─────────────────────────────────────────────────────
+    # ── Top 3 selling courses ──────────────────────────────────────────────────
     course_sales: dict = {}
     for tx in approved_txs:
         cid = tx.get("course_id", "unknown")
         course_sales[cid] = course_sales.get(cid, 0) + 1
 
-    if course_sales:
-        top_course_id    = max(course_sales, key=course_sales.get)
-        top_course_count = course_sales[top_course_id]
-        # Fetch readable title
-        tc_row = supabase.table("courses").select("title").eq("course_id", top_course_id).execute()
-        top_course_name  = tc_row.data[0]["title"] if tc_row.data else top_course_id
-    else:
-        top_course_name  = "N/A"
-        top_course_count = 0
+    top3_courses = sorted(course_sales.items(), key=lambda x: x[1], reverse=True)[:3]
+    top3_course_lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (cid, count) in enumerate(top3_courses):
+        tc_row = supabase.table("courses").select("title").eq("course_id", cid).execute()
+        name   = tc_row.data[0]["title"] if tc_row.data else cid
+        top3_course_lines.append(f"   {medals[i]} {name}  —  <b>{count} sale(s)</b>")
 
     # ── Referrals ──────────────────────────────────────────────────────────────
     all_refs = supabase.table("referrals").select("referrer_id, status").execute().data
@@ -757,18 +757,13 @@ async def cmd_stats(message: types.Message):
     converted_refs   = len([r for r in all_refs if r["status"] == "purchased"])
     unique_referrers = len(set(r["referrer_id"] for r in all_refs))
 
-    # Top referrer (most referred users)
+    # ── Top 3 referrers ────────────────────────────────────────────────────────
     referrer_counts: dict = {}
     for r in all_refs:
         rid = r["referrer_id"]
         referrer_counts[rid] = referrer_counts.get(rid, 0) + 1
 
-    if referrer_counts:
-        top_referrer_id    = max(referrer_counts, key=referrer_counts.get)
-        top_referrer_count = referrer_counts[top_referrer_id]
-    else:
-        top_referrer_id    = None
-        top_referrer_count = 0
+    top3_referrers = sorted(referrer_counts.items(), key=lambda x: x[1], reverse=True)[:3]
 
     # ── Wallet Economy ─────────────────────────────────────────────────────────
     commissions = supabase.table("referral_commissions") \
@@ -800,9 +795,14 @@ async def cmd_stats(message: types.Message):
         f"   💳 Wallet-paid sales:       <b>{wallet_paid_count}</b>",
         f"   🏦 Wallet used in sales:    <b>₹{total_wallet_used_in_sales:,.2f}</b>",
         "",
-        "🏆 <b>TOP SELLING ITEM</b>",
-        f"   📘 {top_course_name}",
-        f"   🔢 Sold {top_course_count} time(s)",
+        "🏆 <b>TOP SELLING ITEMS</b>",
+    ]
+    if top3_course_lines:
+        lines += top3_course_lines
+    else:
+        lines.append("   No sales yet.")
+
+    lines += [
         "",
         "📚 <b>CATALOGUE</b>",
         f"   Individual courses:         <b>{course_count}</b>",
@@ -813,13 +813,14 @@ async def cmd_stats(message: types.Message):
         f"   Total referral links used:  <b>{total_refs}</b>",
         f"   Converted to purchase:      <b>{converted_refs}</b>",
         f"   Active referrers:           <b>{unique_referrers}</b>",
+        "",
+        "🏅 <b>TOP REFERRERS</b>",
     ]
-
-    if top_referrer_id:
-        lines.append(
-            f"   🥇 Top referrer:           <code>{top_referrer_id}</code>  "
-            f"({top_referrer_count} referrals)"
-        )
+    if top3_referrers:
+        for i, (rid, count) in enumerate(top3_referrers):
+            lines.append(f"   {medals[i]} <code>{rid}</code>  —  <b>{count} referral(s)</b>")
+    else:
+        lines.append("   No referrals yet.")
 
     lines += [
         "",
