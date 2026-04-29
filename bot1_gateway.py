@@ -18,7 +18,7 @@ ADMIN_ID         = int(os.getenv("ADMIN_ID"))
 BOT2_USERNAME    = os.getenv("BOT2_USERNAME", "ExclusiveCollectionVIP_bot")
 REFERRAL_PERCENT = 25
 WELCOME_PHOTO    = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg"
-AUTO_DELETE_SECS = 900
+AUTO_DELETE_SECS = 1800   # 30 minutes
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
