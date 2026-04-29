@@ -13,7 +13,8 @@ BOT_TOKEN             = os.getenv("BOT2_TOKEN")
 ADMIN_ID              = int(os.getenv("ADMIN_ID"))
 BOT1_USERNAME         = os.getenv("BOT1_USERNAME", "YourGatewayBot")
 DUMP_CHAT_ID          = int(os.getenv("DUMP_CHAT_ID", "-1003913013704"))
-AUTO_DELETE_SECS      = 900
+AUTO_DELETE_SECS      = 900    # 15 min — payment windows
+DELIVERY_DELETE_SECS  = 3600   # 1 hour — delivered files (gives users time to save)
 REFERRAL_PERCENT      = 25
 PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
 
@@ -199,27 +200,26 @@ def _course_caption(course: dict) -> str:
 
 async def _deliver_course(user_id: int, course_id: str):
     cr = supabase.table("courses").select("delivery_text, dump_message_ids").eq("course_id", course_id).execute()
-    
+
     if not cr.data:
         await bot.send_message(user_id, "✅ Payment approved! Contact support for your materials.")
         return
-        
+
     del_text = cr.data[0].get("delivery_text") or "✅ Payment verified! Here are your materials:"
-    
-    # 1. Send the intro text (will be auto-deleted)
+
+    # 1. Send the intro text
     sent_text = await bot.send_message(
-        chat_id=user_id, 
-        text=f"{del_text}",
-        parse_mode="HTML", 
+        chat_id=user_id,
+        text=del_text,
+        parse_mode="HTML",
         disable_web_page_preview=True
     )
-    asyncio.create_task(_auto_delete(user_id, sent_text.message_id))
+    asyncio.create_task(_auto_delete(user_id, sent_text.message_id, DELIVERY_DELETE_SECS))
 
-    # 2. Copy the files (will be auto-deleted)
+    # 2. Copy the files
     dump_ids_str = cr.data[0].get("dump_message_ids")
     if dump_ids_str:
         message_ids = [m.strip() for m in dump_ids_str.split(",") if m.strip()]
-        
         for msg_id in message_ids:
             try:
                 sent_media = await bot.copy_message(
@@ -227,21 +227,20 @@ async def _deliver_course(user_id: int, course_id: str):
                     from_chat_id=DUMP_CHAT_ID,
                     message_id=int(msg_id)
                 )
-                asyncio.create_task(_auto_delete(user_id, sent_media.message_id))
-                await asyncio.sleep(0.5) 
+                asyncio.create_task(_auto_delete(user_id, sent_media.message_id, DELIVERY_DELETE_SECS))
+                await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Failed to deliver message {msg_id} from dump channel: {e}")
 
-    # 3. Send the permanent warning message (NO auto-delete task attached)
-    warning_text = (
-        "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
-        "The files above will be <b>automatically deleted in 15 minutes</b>. "
-        "Please forward them to your <b>Saved Messages</b> or download them immediately to secure your access.\n\n"
-        "<i>If your files have already disappeared and you lost access, please contact our support team.</i>"
-    )
+    # 3. Warning message — permanent, no auto-delete
     await bot.send_message(
         chat_id=user_id,
-        text=warning_text,
+        text=(
+            "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
+            "The files above will be <b>automatically deleted in 1 hour</b>. "
+            "Please forward them to your <b>Saved Messages</b> or download them immediately.\n\n"
+            "<i>Lost access after deletion? Contact our support team.</i>"
+        ),
         parse_mode="HTML"
     )
 
@@ -653,12 +652,20 @@ async def handle_screenshot(message: types.Message):
             parse_mode="HTML"
         )
 
-    tx        = res.data[0]
-    trans_id  = tx["id"]
-    course_id = tx["course_id"]
+    tx           = res.data[0]
+    trans_id     = tx["id"]
+    course_id    = tx["course_id"]
     course_price = round(float(tx.get("amount_paid") or 0), 2)
     if course_price <= 0:
         course_price = _get_course_price(course_id)
+
+    # ── Already owns this course? Warn admin but still forward ───────────────
+    already_owned = supabase.table("transactions").select("id").eq(
+        "telegram_user_id", user_id
+    ).eq("course_id", course_id).eq("status", "approved").execute()
+    already_owned_warning = ""
+    if already_owned.data:
+        already_owned_warning = "\n\n♻️ <b>NOTE: User already owns this course — likely lost access to files.</b>"
 
     supabase.table("transactions").update({"status": "awaiting_approval"}).eq("id", trans_id).execute()
 
@@ -669,17 +676,48 @@ async def handle_screenshot(message: types.Message):
         parse_mode="HTML"
     )
 
+    # ── Build purchase history for fraud cross-check ───────────────────────
+    history_rows = supabase.table("transactions").select("course_id, status, amount_paid").eq(
+        "telegram_user_id", user_id
+    ).in_("status", ["approved", "awaiting_approval", "redelivered"]).execute().data
+
+    if history_rows:
+        history_lines = []
+        for h in history_rows:
+            status_icon = {"approved": "✅", "awaiting_approval": "⏳", "redelivered": "♻️"}.get(h["status"], "❓")
+            amt = f"₹{float(h.get('amount_paid') or 0):.0f}"
+            is_current = "  ← <b>this</b>" if h["course_id"] == course_id and h["status"] == "awaiting_approval" else ""
+            history_lines.append(f"  {status_icon} <code>{h['course_id']}</code>  {amt}{is_current}")
+        history_block = "\n\n🗂 <b>Purchase History:</b>\n" + "\n".join(history_lines)
+    else:
+        history_block = "\n\n🗂 <b>Purchase History:</b> First purchase"
+
+    # Check for other awaiting_approval transactions for same course (duplicate screenshots)
+    duplicate_pending = supabase.table("transactions").select("id").eq(
+        "telegram_user_id", user_id
+    ).eq("course_id", course_id).eq("status", "awaiting_approval").neq("id", trans_id).execute()
+    fraud_warning = ""
+    if duplicate_pending.data:
+        fraud_warning = (
+            "\n\n🚨 <b>DUPLICATE ALERT:</b> This user already has "
+            f"<b>{len(duplicate_pending.data)}</b> other pending screenshot(s) "
+            "for this same course. Likely resubmitting."
+        )
+
     await bot.send_photo(
         chat_id=ADMIN_ID,
         photo=message.photo[-1].file_id,
         caption=(
             f"💳 <b>New Payment Screenshot</b>\n\n"
-            f"👤 User:         @{message.from_user.username or str(user_id)} (<code>{user_id}</code>)\n"
-            f"📘 Item:         <b>{_get_course_title(course_id)}</b>\n"
-            f"🔑 Item ID:      <code>{course_id}</code>\n"
-            f"💵 Price:        <b>₹{course_price:.2f}</b>\n"
-            f"🏦 User Wallet:  <b>₹{_get_wallet(user_id):.2f}</b>\n"
-            f"🔖 Tx ID:        <code>{trans_id}</code>"
+            f"👤 User:    @{message.from_user.username or str(user_id)} (<code>{user_id}</code>)\n"
+            f"📘 Item:    <b>{_get_course_title(course_id)}</b>\n"
+            f"🔑 ID:      <code>{course_id}</code>\n"
+            f"💵 Price:   <b>₹{course_price:.2f}</b>\n"
+            f"🏦 Wallet:  <b>₹{_get_wallet(user_id):.2f}</b>\n"
+            f"🔖 Tx ID:   <code>{trans_id}</code>"
+            f"{already_owned_warning}"
+            f"{history_block}"
+            f"{fraud_warning}"
         ),
         reply_markup=_admin_keyboard(trans_id),
         parse_mode="HTML"
@@ -741,14 +779,33 @@ async def admin_decision(callback: types.CallbackQuery):
                     pass
                 return await callback.answer("❌ Wallet insufficient — auto-rejected.", show_alert=True)
 
-        # 🛠 FIX: Acknowledge the button click immediately so Telegram doesn't time out
+        # ── Duplicate guard: already approved for this course? ────────────────
+        already_approved = supabase.table("transactions").select("id").eq(
+            "telegram_user_id", user_id
+        ).eq("course_id", course_id).eq("status", "approved").execute()
+
+        if already_approved.data:
+            await callback.answer("⚠️ Already purchased — re-delivering, stats unchanged.")
+            supabase.table("transactions").update({"status": "redelivered"}).eq("id", trans_id_str).execute()
+            await _deliver_course(user_id, course_id)
+            try:
+                await callback.message.edit_caption(
+                    caption=(callback.message.caption or "") +
+                    "\n\n♻️ <b>RE-DELIVERED — User already owned this course.</b>\n"
+                    "<i>Not counted in sales stats.</i>",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+
         await callback.answer("✅ Approving and delivering files... (This may take a moment)")
 
         supabase.table("transactions").update({"status": "approved"}).eq("id", trans_id_str).execute()
-        
+
         # Now the bot takes its time safely delivering files
         await _deliver_course(user_id, course_id)
-        
+
         referrer_id, credit = _pay_referrer(user_id, course_price, trans_id_str, course_id)
         if referrer_id:
             try:
@@ -767,7 +824,7 @@ async def admin_decision(callback: types.CallbackQuery):
             suffix += f"\n💸 Wallet deducted: ₹{wallet_used:.2f}\n🏦 User new balance: ₹{_get_wallet(user_id):.2f}"
         if referrer_id:
             suffix += f"\n🎁 Referrer {referrer_id} earned ₹{credit:.2f}"
-            
+
         try:
             await callback.message.edit_caption(
                 caption=(callback.message.caption or "") + suffix,
