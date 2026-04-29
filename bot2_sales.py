@@ -20,9 +20,13 @@ PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
 
+# Per-user recovery task tracker — cancels old task when user browses a new course
+_pending_recovery: dict[int, asyncio.Task] = {}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _get_wallet(user_id: int) -> float:
     row = supabase.table("users").select("wallet_balance").eq("telegram_user_id", user_id).execute()
@@ -242,43 +246,48 @@ async def _deliver_course(user_id: int, course_id: str):
     )
 
 async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
-    await asyncio.sleep(960) 
-    check = supabase.table("transactions").select("status").eq(
-        "telegram_user_id", user_id
-    ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
-    
-    if not check.data:
-        kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="💳 Resume Purchase", callback_data=f"buy:{course_id}"))
-        kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/ProSeller_69"))
-        
-        await bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"👋 <b>Still interested in {course_title}?</b>\n\n"
-                "We noticed you didn't finish your checkout. If you had any trouble with the "
-                "payment methods or have questions, feel free to reach out to our support team!"
-            ),
-            reply_markup=kb.as_markup(),
-            parse_mode="HTML"
-        )
-
-        await asyncio.sleep(86400)
-        check_final = supabase.table("transactions").select("status").eq(
+    try:
+        await asyncio.sleep(960)
+        check = supabase.table("transactions").select("status").eq(
             "telegram_user_id", user_id
         ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
-        
-        if not check_final.data:
-            await bot.send_message(
+
+        if not check.data:
+            kb = InlineKeyboardBuilder()
+            kb.row(InlineKeyboardButton(text="💳 Resume Purchase", callback_data=f"buy:{course_id}"))
+            kb.row(InlineKeyboardButton(text="💬 Need Help? Contact Admin", url="https://t.me/ProSeller_69"))
+
+            sent = await bot.send_message(
                 chat_id=user_id,
                 text=(
-                    f"✨ <b>Last call for {course_title}!</b>\n\n"
-                    "The private access link is still available for you. "
-                    "Don't miss out!"
+                    f"👋 <b>Still interested in {course_title}?</b>\n\n"
+                    "We noticed you didn't finish your checkout. If you had any trouble with the "
+                    "payment methods or have questions, feel free to reach out to our support team!"
                 ),
                 reply_markup=kb.as_markup(),
                 parse_mode="HTML"
             )
+
+            await asyncio.sleep(86400)
+            check_final = supabase.table("transactions").select("status").eq(
+                "telegram_user_id", user_id
+            ).eq("course_id", course_id).in_("status", ["approved", "awaiting_approval"]).execute()
+
+            if not check_final.data:
+                sent2 = await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"✨ <b>Last call for {course_title}!</b>\n\n"
+                        "The private access link is still available for you. "
+                        "Don't miss out!"
+                    ),
+                    reply_markup=kb.as_markup(),
+                    parse_mode="HTML"
+                )
+
+    except asyncio.CancelledError:
+        # User opened a different course — old notification task silently cancelled
+        pass
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /start — COURSE/BUNDLE DETAIL
@@ -312,7 +321,13 @@ async def handle_course_selection(message: types.Message, command: CommandObject
     )
     
     asyncio.create_task(_auto_delete(message.chat.id, sent.message_id))
-    asyncio.create_task(_recovery_notifications(user_id, course_id, course["title"]))
+
+    # Cancel any previous recovery task for this user (they were just browsing)
+    old_task = _pending_recovery.pop(user_id, None)
+    if old_task and not old_task.done():
+        old_task.cancel()
+    task = asyncio.create_task(_recovery_notifications(user_id, course_id, course["title"]))
+    _pending_recovery[user_id] = task
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BACK TO ITEM
