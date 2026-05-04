@@ -762,9 +762,12 @@ async def stats_handler(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return await callback.answer("⛔ Unauthorized.", show_alert=True)
 
-    period = callback.data.split("_", 1)[1]  # today / week / all
-    await callback.message.edit_reply_markup(reply_markup=None)
-    thinking = await callback.message.edit_text("⏳ Crunching the numbers…")
+    period = callback.data.split("_", 1)[1]
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    thinking = await callback.message.answer("⏳ Crunching the numbers…")
 
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
