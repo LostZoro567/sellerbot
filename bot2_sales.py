@@ -207,7 +207,19 @@ async def _deliver_course(user_id: int, course_id: str):
 
     del_text = cr.data[0].get("delivery_text") or "✅ Payment verified! Here are your materials:"
 
-    # 1. Send the intro text
+    # 1. Warning first so user sees it before files appear
+    await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
+            "The files below will be <b>automatically deleted in 1 hour</b>. "
+            "Please forward them to your <b>Saved Messages</b> or download them immediately.\n\n"
+            "<i>Lost access after deletion? Contact our support team.</i>"
+        ),
+        parse_mode="HTML"
+    )
+
+    # 2. Send the intro text
     sent_text = await bot.send_message(
         chat_id=user_id,
         text=del_text,
@@ -216,7 +228,7 @@ async def _deliver_course(user_id: int, course_id: str):
     )
     asyncio.create_task(_auto_delete(user_id, sent_text.message_id, DELIVERY_DELETE_SECS))
 
-    # 2. Copy the files
+    # 3. Copy the files
     dump_ids_str = cr.data[0].get("dump_message_ids")
     if dump_ids_str:
         message_ids = [m.strip() for m in dump_ids_str.split(",") if m.strip()]
@@ -231,18 +243,6 @@ async def _deliver_course(user_id: int, course_id: str):
                 await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Failed to deliver message {msg_id} from dump channel: {e}")
-
-    # 3. Warning message — permanent, no auto-delete
-    await bot.send_message(
-        chat_id=user_id,
-        text=(
-            "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
-            "The files above will be <b>automatically deleted in 1 hour</b>. "
-            "Please forward them to your <b>Saved Messages</b> or download them immediately.\n\n"
-            "<i>Lost access after deletion? Contact our support team.</i>"
-        ),
-        parse_mode="HTML"
-    )
 
 async def _recovery_notifications(user_id: int, course_id: str, course_title: str):
     try:
@@ -669,6 +669,24 @@ async def handle_screenshot(message: types.Message):
 
     supabase.table("transactions").update({"status": "awaiting_approval"}).eq("id", trans_id).execute()
 
+    # Auto-reject if admin doesn't respond within 6 hours
+    async def _approval_timeout(tid: str, uid: int):
+        await asyncio.sleep(21600)  # 6 hours
+        check = supabase.table("transactions").select("status").eq("id", tid).execute()
+        if check.data and check.data[0]["status"] == "awaiting_approval":
+            supabase.table("transactions").update({"status": "rejected"}).eq("id", tid).execute()
+            try:
+                await bot.send_message(
+                    uid,
+                    "⏰ <b>Payment review timed out.</b>\n\n"
+                    "Your screenshot was not reviewed within 6 hours.\n"
+                    "Please resubmit your payment screenshot to continue.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    asyncio.create_task(_approval_timeout(str(trans_id), user_id))
+
     await message.answer(
         "📸 <b>Screenshot received!</b>\n\n"
         "Admin is reviewing your payment — usually just a few minutes.\n"
@@ -834,25 +852,64 @@ async def admin_decision(callback: types.CallbackQuery):
             pass
 
     elif action == "reject":
-        # 🛠 FIX: Acknowledge the button click immediately
-        await callback.answer("❌ Rejecting...")
-        
-        supabase.table("transactions").update({"status": "rejected"}).eq("id", trans_id_str).execute()
-        
-        if payment_type == "wallet":
-            msg = "❌ <b>Wallet payment request rejected.</b>\n\nNo money was deducted."
-        else:
-            msg = "❌ <b>Payment could not be verified.</b>\n\nPlease re-upload your screenshot."
-            
-        await bot.send_message(user_id, msg, parse_mode="HTML")
-        
+        # Show reason picker to admin
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Fake Payment",     callback_data=f"rejectreason_fake_{trans_id_str}")],
+            [InlineKeyboardButton(text="📁 Wrong Files Selected", callback_data=f"rejectreason_wrongfiles_{trans_id_str}")],
+            [InlineKeyboardButton(text="✅ Already Approved", callback_data=f"rejectreason_alreadyapproved_{trans_id_str}")],
+        ])
+        await callback.answer("Choose a reject reason:")
         try:
             await callback.message.edit_caption(
-                caption=(callback.message.caption or "") + "\n\n❌ <b>REJECTED</b>",
+                caption=(callback.message.caption or "") + "\n\n🔴 <b>Rejecting — select reason:</b>",
+                reply_markup=kb,
                 parse_mode="HTML"
             )
         except Exception:
             pass
+
+@dp.callback_query(F.data.startswith("rejectreason_"))
+async def reject_reason_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("⛔ Unauthorized.", show_alert=True)
+
+    # rejectreason_<reason>_<trans_id>
+    parts        = callback.data.split("_", 2)
+    reason_key   = parts[1]
+    trans_id_str = parts[2]
+
+    res = supabase.table("transactions").select("*").eq("id", trans_id_str).execute()
+    if not res.data:
+        return await callback.answer("❌ Transaction not found.", show_alert=True)
+    tx      = res.data[0]
+    user_id = tx["telegram_user_id"]
+
+    reason_map = {
+        "fake":          ("💸 Fake Payment",          "Your payment screenshot could not be verified. If this is a mistake, please contact support."),
+        "wrongfiles":    ("📁 Wrong Files Selected",   "It looks like you selected the wrong course. Please go back, select the correct course, and resubmit."),
+        "alreadyapproved": ("✅ Already Approved",     "This payment was already approved previously. Your files were already delivered. Contact support if you lost access."),
+    }
+    reason_label, user_msg = reason_map.get(reason_key, ("Unknown", "Your payment was rejected. Please contact support."))
+
+    supabase.table("transactions").update({"status": "rejected"}).eq("id", trans_id_str).execute()
+
+    await bot.send_message(
+        user_id,
+        f"❌ <b>Payment Rejected — {reason_label}</b>\n\n"
+        f"{user_msg}",
+        parse_mode="HTML"
+    )
+
+    await callback.answer("✅ Rejected.")
+    try:
+        await callback.message.edit_caption(
+            caption=(callback.message.caption or "").replace("\n\n🔴 <b>Rejecting — select reason:</b>", "") +
+            f"\n\n❌ <b>REJECTED — {reason_label}</b>",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENTRY
