@@ -47,10 +47,14 @@ class AddBundleFSM(StatesGroup):
 
 class BroadcastFSM(StatesGroup):
     waiting_for_message = State()
+    waiting_for_confirm = State()
 
 class DBroadcastFSM(StatesGroup):
     waiting_for_video       = State()
     waiting_for_button_text = State()
+
+class RejectFSM(StatesGroup):
+    waiting_for_reason = State()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -575,9 +579,35 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
     await state.set_state(BroadcastFSM.waiting_for_message)
 
 @dp.message(BroadcastFSM.waiting_for_message)
-async def execute_broadcast(message: types.Message, state: FSMContext):
+async def broadcast_preview(message: types.Message, state: FSMContext):
+    await state.update_data(
+        preview_chat_id=message.chat.id,
+        preview_message_id=message.message_id
+    )
+    await state.set_state(BroadcastFSM.waiting_for_confirm)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Confirm — Send to all", callback_data="broadcast_confirm"),
+        InlineKeyboardButton(text="❌ Cancel",                callback_data="broadcast_cancel"),
+    ]])
+    await message.answer(
+        "👆 <b>Preview above.</b>\n\n"
+        "This will be sent to <b>all users</b>. Confirm?",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.in_({"broadcast_confirm", "broadcast_cancel"}))
+async def broadcast_confirm_handler(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("⛔ Unauthorized.", show_alert=True)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    if callback.data == "broadcast_cancel":
+        await state.clear()
+        return await callback.message.edit_text("❌ <b>Broadcast cancelled.</b>", parse_mode="HTML")
+
+    data = await state.get_data()
     await state.clear()
-    status_msg = await message.answer("⏳ Collecting user list…")
+    status_msg = await callback.message.edit_text("⏳ Collecting user list…")
 
     rows         = supabase.table("users").select("telegram_user_id").execute().data
     unique_users = {r["telegram_user_id"] for r in rows}
@@ -585,7 +615,11 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
     success = fail = 0
     for uid in unique_users:
         try:
-            await message.copy_to(chat_id=uid)
+            await bot.copy_message(
+                chat_id=uid,
+                from_chat_id=data["preview_chat_id"],
+                message_id=data["preview_message_id"]
+            )
             success += 1
             await asyncio.sleep(0.05)
         except TelegramForbiddenError:
@@ -673,7 +707,8 @@ async def dbroadcast_execute(message: types.Message, state: FSMContext):
                 video=video_file_id,
                 caption=caption or None,
                 reply_markup=kb,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                protect_content=True
             )
             sent_messages.append((uid, sent.message_id, time.time()))
             success += 1
@@ -715,16 +750,47 @@ async def dbroadcast_execute(message: types.Message, state: FSMContext):
 async def cmd_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📅 Today",     callback_data="stats_today"),
+        InlineKeyboardButton(text="📆 This Week", callback_data="stats_week"),
+        InlineKeyboardButton(text="📊 All Time",  callback_data="stats_all"),
+    ]])
+    await message.answer("📊 <b>Stats — choose a time range:</b>", reply_markup=kb, parse_mode="HTML")
 
-    thinking = await message.answer("⏳ Crunching the numbers…")
+@dp.callback_query(F.data.startswith("stats_"))
+async def stats_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("⛔ Unauthorized.", show_alert=True)
+
+    period = callback.data.split("_", 1)[1]  # today / week / all
+    await callback.message.edit_reply_markup(reply_markup=None)
+    thinking = await callback.message.edit_text("⏳ Crunching the numbers…")
+
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    if period == "today":
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        label = "Today"
+    elif period == "week":
+        since = (now - timedelta(days=7)).isoformat()
+        label = "Last 7 Days"
+    else:
+        since = None
+        label = "All Time"
 
     # ── Users ──────────────────────────────────────────────────────────────────
-    total_users = len(supabase.table("users").select("telegram_user_id").execute().data)
+    user_q = supabase.table("users").select("telegram_user_id")
+    if since:
+        user_q = user_q.gte("created_at", since)
+    total_users = len(user_q.execute().data)
 
     # ── Transactions ───────────────────────────────────────────────────────────
-    approved_txs = supabase.table("transactions") \
+    tx_q = supabase.table("transactions") \
         .select("amount_paid, course_id, wallet_used, payment_type") \
-        .eq("status", "approved").execute().data
+        .eq("status", "approved")
+    if since:
+        tx_q = tx_q.gte("created_at", since)
+    approved_txs = tx_q.execute().data
 
     awaiting_txs = supabase.table("transactions") \
         .select("id").eq("status", "awaiting_approval").execute().data
@@ -733,13 +799,9 @@ async def cmd_stats(message: types.Message):
     pending_count   = len(awaiting_txs)
     total_revenue   = sum(float(tx.get("amount_paid") or 0) for tx in approved_txs)
 
-    # Wallet-paid vs screenshot-paid breakdown
     wallet_paid_count = len([tx for tx in approved_txs if tx.get("payment_type") == "wallet"])
     screenshot_count  = total_approved - wallet_paid_count
-
-    total_wallet_used_in_sales = sum(
-        float(tx.get("wallet_used") or 0) for tx in approved_txs
-    )
+    total_wallet_used_in_sales = sum(float(tx.get("wallet_used") or 0) for tx in approved_txs)
 
     # ── Top 3 selling courses ──────────────────────────────────────────────────
     course_sales: dict = {}
@@ -756,29 +818,32 @@ async def cmd_stats(message: types.Message):
         top3_course_lines.append(f"   {medals[i]} {name}  —  <b>{count} sale(s)</b>")
 
     # ── Referrals ──────────────────────────────────────────────────────────────
-    all_refs = supabase.table("referrals").select("referrer_id, status").execute().data
+    ref_q = supabase.table("referrals").select("referrer_id, status")
+    if since:
+        ref_q = ref_q.gte("created_at", since)
+    all_refs = ref_q.execute().data
 
     total_refs       = len(all_refs)
     converted_refs   = len([r for r in all_refs if r["status"] == "purchased"])
     unique_referrers = len(set(r["referrer_id"] for r in all_refs))
 
-    # ── Top 3 referrers ────────────────────────────────────────────────────────
     referrer_counts: dict = {}
     for r in all_refs:
         rid = r["referrer_id"]
         referrer_counts[rid] = referrer_counts.get(rid, 0) + 1
-
     top3_referrers = sorted(referrer_counts.items(), key=lambda x: x[1], reverse=True)[:3]
 
     # ── Wallet Economy ─────────────────────────────────────────────────────────
-    commissions = supabase.table("referral_commissions") \
-        .select("commission_amt").execute().data
+    comm_q = supabase.table("referral_commissions").select("commission_amt")
+    if since:
+        comm_q = comm_q.gte("created_at", since)
+    commissions = comm_q.execute().data
     total_commission_paid = sum(float(c.get("commission_amt") or 0) for c in commissions)
 
-    wallet_rows    = supabase.table("users").select("wallet_balance").execute().data
+    wallet_rows       = supabase.table("users").select("wallet_balance").execute().data
     total_wallet_held = sum(float(w.get("wallet_balance") or 0) for w in wallet_rows)
 
-    # ── Courses ────────────────────────────────────────────────────────────────
+    # ── Courses (always all-time) ───────────────────────────────────────────────
     all_courses  = supabase.table("courses").select("course_id").execute().data
     total_items  = len(all_courses)
     bundle_count = len([c for c in all_courses if c["course_id"].startswith("bundle_")])
@@ -786,7 +851,7 @@ async def cmd_stats(message: types.Message):
 
     # ── Compose message ────────────────────────────────────────────────────────
     lines = [
-        "📊 <b>Full Admin Statistics</b>",
+        f"📊 <b>Admin Statistics — {label}</b>",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
         "👥 <b>USERS</b>",
@@ -840,8 +905,7 @@ async def cmd_stats(message: types.Message):
         f"<i>(revenue minus wallet discounts)</i>",
     ]
 
-    await thinking.delete()
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await thinking.edit_text("\n".join(lines), parse_mode="HTML")
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
