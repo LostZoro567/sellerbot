@@ -600,14 +600,24 @@ async def broadcast_preview(message: types.Message, state: FSMContext):
 async def broadcast_confirm_handler(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return await callback.answer("⛔ Unauthorized.", show_alert=True)
-    await callback.message.edit_reply_markup(reply_markup=None)
+
+    await callback.answer()
+
     if callback.data == "broadcast_cancel":
         await state.clear()
-        return await callback.message.edit_text("❌ <b>Broadcast cancelled.</b>", parse_mode="HTML")
+        return await callback.message.edit_text(
+            "❌ <b>Broadcast cancelled.</b>",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
 
     data = await state.get_data()
     await state.clear()
-    status_msg = await callback.message.edit_text("⏳ Collecting user list…")
+
+    status_msg = await callback.message.edit_text(
+        "⏳ Collecting user list…",
+        reply_markup=None
+    )
 
     rows         = supabase.table("users").select("telegram_user_id").execute().data
     unique_users = {r["telegram_user_id"] for r in rows}
