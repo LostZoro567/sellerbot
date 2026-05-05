@@ -852,21 +852,17 @@ async def admin_decision(callback: types.CallbackQuery):
             pass
 
     elif action == "reject":
-        # Show reason picker to admin
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💸 Fake Payment",     callback_data=f"rejectreason_fake_{trans_id_str}")],
+            [InlineKeyboardButton(text="💸 Fake Payment",         callback_data=f"rejectreason_fake_{trans_id_str}")],
             [InlineKeyboardButton(text="📁 Wrong Files Selected", callback_data=f"rejectreason_wrongfiles_{trans_id_str}")],
-            [InlineKeyboardButton(text="✅ Already Approved", callback_data=f"rejectreason_alreadyapproved_{trans_id_str}")],
+            [InlineKeyboardButton(text="✅ Already Approved",     callback_data=f"rejectreason_alreadyapproved_{trans_id_str}")],
         ])
-        await callback.answer("Choose a reject reason:")
-        try:
-            await callback.message.edit_caption(
-                caption=(callback.message.caption or "") + "\n\n🔴 <b>Rejecting — select reason:</b>",
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        await callback.answer("Select a reject reason below.")
+        await callback.message.answer(
+            f"🔴 <b>Rejecting Tx</b> <code>{trans_id_str}</code>\n\nSelect reason to send to user:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(F.data.startswith("rejectreason_"))
 async def reject_reason_handler(callback: types.CallbackQuery):
