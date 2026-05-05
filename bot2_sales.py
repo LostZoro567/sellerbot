@@ -858,9 +858,11 @@ async def admin_decision(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="✅ Already Approved",     callback_data=f"rr_dupe_{trans_id_str}")],
         ])
         await callback.answer("Select a reject reason below.")
-        await callback.message.answer(
-            f"🔴 <b>Rejecting Tx</b> <code>{trans_id_str}</code>\n\nSelect reason to send to user:",
+        await bot.send_message(
+            chat_id=callback.message.chat.id,
+            text=f"🔴 <b>Rejecting Tx</b> <code>{trans_id_str}</code>\n\nSelect reason to send to user:",
             reply_markup=kb,
+            reply_to_message_id=callback.message.message_id,
             parse_mode="HTML"
         )
 
@@ -897,15 +899,21 @@ async def reject_reason_handler(callback: types.CallbackQuery):
     )
 
     await callback.answer("✅ Rejected.")
+
+    # Delete the reason picker message
     try:
-        await callback.message.edit_caption(
-            caption=(callback.message.caption or "").replace("\n\n🔴 <b>Rejecting — select reason:</b>", "") +
-            f"\n\n❌ <b>REJECTED — {reason_label}</b>",
-            reply_markup=None,
-            parse_mode="HTML"
-        )
+        await callback.message.delete()
     except Exception:
         pass
+
+    # Update the original photo caption (picker was sent as reply to it)
+    original = callback.message.reply_to_message
+    if original:
+        try:
+            new_caption = (original.caption or "") + f"\n\n❌ <b>REJECTED — {reason_label}</b>"
+            await original.edit_caption(caption=new_caption, reply_markup=None, parse_mode="HTML")
+        except Exception:
+            pass
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENTRY
