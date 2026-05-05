@@ -853,9 +853,9 @@ async def admin_decision(callback: types.CallbackQuery):
 
     elif action == "reject":
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💸 Fake Payment",         callback_data=f"rejectreason_fake_{trans_id_str}")],
-            [InlineKeyboardButton(text="📁 Wrong Files Selected", callback_data=f"rejectreason_wrongfiles_{trans_id_str}")],
-            [InlineKeyboardButton(text="✅ Already Approved",     callback_data=f"rejectreason_alreadyapproved_{trans_id_str}")],
+            [InlineKeyboardButton(text="💸 Fake Payment",         callback_data=f"rr_fake_{trans_id_str}")],
+            [InlineKeyboardButton(text="📁 Wrong Files Selected", callback_data=f"rr_wrong_{trans_id_str}")],
+            [InlineKeyboardButton(text="✅ Already Approved",     callback_data=f"rr_dupe_{trans_id_str}")],
         ])
         await callback.answer("Select a reject reason below.")
         await callback.message.answer(
@@ -864,12 +864,12 @@ async def admin_decision(callback: types.CallbackQuery):
             parse_mode="HTML"
         )
 
-@dp.callback_query(F.data.startswith("rejectreason_"))
+@dp.callback_query(F.data.startswith("rr_"))
 async def reject_reason_handler(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return await callback.answer("⛔ Unauthorized.", show_alert=True)
 
-    # rejectreason_<reason>_<trans_id>
+    # rr_<reason>_<trans_id>
     parts        = callback.data.split("_", 2)
     reason_key   = parts[1]
     trans_id_str = parts[2]
@@ -881,9 +881,9 @@ async def reject_reason_handler(callback: types.CallbackQuery):
     user_id = tx["telegram_user_id"]
 
     reason_map = {
-        "fake":          ("💸 Fake Payment",          "Your payment screenshot could not be verified. If this is a mistake, please contact support."),
-        "wrongfiles":    ("📁 Wrong Files Selected",   "It looks like you selected the wrong course. Please go back, select the correct course, and resubmit."),
-        "alreadyapproved": ("✅ Already Approved",     "This payment was already approved previously. Your files were already delivered. Contact support if you lost access."),
+        "fake":  ("💸 Fake Payment",         "Your payment screenshot could not be verified. If this is a mistake, please contact support."),
+        "wrong": ("📁 Wrong Files Selected",  "It looks like you selected the wrong course. Please go back, select the correct course, and resubmit."),
+        "dupe":  ("✅ Already Approved",      "This payment was already approved previously. Your files were already delivered. Contact support if you lost access."),
     }
     reason_label, user_msg = reason_map.get(reason_key, ("Unknown", "Your payment was rejected. Please contact support."))
 
