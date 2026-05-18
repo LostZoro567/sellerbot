@@ -214,7 +214,7 @@ async def _deliver_course(user_id: int, course_id: str):
             "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
             "The files below will be <b>automatically deleted in 1 hour</b>. "
             "Please forward them to your <b>Saved Messages</b> or download them immediately.\n\n"
-            "<i>Lost access after deletion? Contact our support team.</i>"
+            "<i>Lost access? Buy again & send the same screenshot again.</i>"
         ),
         parse_mode="HTML"
     )
