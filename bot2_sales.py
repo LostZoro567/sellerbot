@@ -688,9 +688,15 @@ async def handle_screenshot(message: types.Message):
     asyncio.create_task(_approval_timeout(str(trans_id), user_id))
 
     await message.answer(
-        "📸 <b>Screenshot received!</b>\n\n"
-        "Admin is reviewing your payment — usually just a few minutes.\n"
-        "You'll get a notification once approved. 🔔",
+        "✅ Payment screenshot received successfully.\n\n"
+        "⏳ Approval Time:\n"
+        "• Usually within 30–40 seconds\n\n"
+        "➧ Note:\n"
+        "During night time or busy hours (maybe I am sleeping 😴), approval may take longer.\n\n"
+        "Thank you for your patience ❤️\n\n"
+        "➧ Important:\n"
+        "After receiving the files, please forward them to your Saved Messages.\n\n"
+        "⚠️ Files are automatically deleted after 1 hour.",
         parse_mode="HTML"
     )
 
