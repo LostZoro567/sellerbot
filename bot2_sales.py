@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.session.aiohttp import AiohttpSession
 from db import supabase
 
 load_dotenv()
@@ -18,7 +19,9 @@ DELIVERY_DELETE_SECS  = 3600   # 1 hour — delivered files (gives users time to
 REFERRAL_PERCENT      = 25
 PAYMENT_OPTIONS_IMAGE = "https://i.ibb.co/hRNCTGZc/x.jpg"
 
-bot = Bot(token=BOT_TOKEN)
+PROXY_URL = os.getenv("PROXY_URL")  # e.g. socks5://user:pass@host:port — leave unset/blank to disable
+session = AiohttpSession(proxy=PROXY_URL) if PROXY_URL else None
+bot = Bot(token=BOT_TOKEN, session=session)
 dp  = Dispatcher()
 
 # Per-user recovery task tracker — cancels old task when user browses a new course
@@ -214,7 +217,7 @@ async def _deliver_course(user_id: int, course_id: str):
             "⚠️ <b>WARNING: Self-Destructing Files</b>\n\n"
             "The files below will be <b>automatically deleted in 1 hour</b>. "
             "Please forward them to your <b>Saved Messages</b> or download them immediately.\n\n"
-            "<i>Lost access? Buy again & send the same screenshot again.</i>"
+            "<i>Lost access after deletion? Contact our support team.</i>"
         ),
         parse_mode="HTML"
     )
@@ -688,15 +691,9 @@ async def handle_screenshot(message: types.Message):
     asyncio.create_task(_approval_timeout(str(trans_id), user_id))
 
     await message.answer(
-        "✅ Payment screenshot received successfully.\n\n"
-        "⏳ Approval Time:\n"
-        "• Usually within 30–40 seconds\n\n"
-        "➧ Note:\n"
-        "During night time or busy hours (maybe I am sleeping 😴), approval may take longer.\n\n"
-        "Thank you for your patience ❤️\n\n"
-        "➧ Important:\n"
-        "After receiving the files, please forward them to your Saved Messages.\n\n"
-        "⚠️ Files are automatically deleted after 1 hour.",
+        "📸 <b>Screenshot received!</b>\n\n"
+        "Admin is reviewing your payment — usually just a few minutes.\n"
+        "You'll get a notification once approved. 🔔",
         parse_mode="HTML"
     )
 
