@@ -9,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.client.session.aiohttp import AiohttpSession
 from db import supabase
 
 load_dotenv()
@@ -20,7 +21,9 @@ REFERRAL_PERCENT = 25
 WELCOME_PHOTO    = "https://i.ibb.co/B2bDwTpH/2e4c69f3d0d9.jpg"
 AUTO_DELETE_SECS = 1800   # 30 minutes
 
-bot = Bot(token=BOT_TOKEN)
+PROXY_URL = os.getenv("PROXY_URL")  # e.g. socks5://user:pass@host:port — leave unset/blank to disable
+session = AiohttpSession(proxy=PROXY_URL) if PROXY_URL else None
+bot = Bot(token=BOT_TOKEN, session=session)
 dp  = Dispatcher()
 
 # ── FSM States ─────────────────────────────────────────────────────────────────
