@@ -153,7 +153,6 @@ async def _create_tx(user_id: int, course_id: str, course: dict | None = None) -
         "telegram_user_id": user_id,
         "course_id":        course_id,
         "status":           "pending_payment",
-        "payment_type":     "screenshot",
         "amount_paid":      inr,
         "currency":         "INR",
     }))
@@ -969,7 +968,7 @@ async def reject_reason_handler(callback: types.CallbackQuery, state: FSMContext
 
     reasons = {
         "fake":  ("💸 Fake Payment", "Your payment screenshot could not be verified. If this is a mistake, please contact support."),
-        "wrong": ("📁 Wrong Files Selected", "It looks like you selected the wrong course. Please go back, select the correct File, and resubmit."),
+        "wrong": ("📁 Wrong Files Selected", "It looks like you selected the wrong course. Please go back, select the correct course, and resubmit."),
         "dupe":  ("✅ Already Approved", "This payment was already approved previously. Your files were already delivered. Contact support if you lost access."),
     }
     label, text = reasons.get(key, ("Rejected", "Your payment was rejected. Please contact support."))
