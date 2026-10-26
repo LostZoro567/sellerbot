@@ -144,3 +144,47 @@ def build_payment_methods() -> dict:
             "admin_button": True,
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTO BROADCAST  (runs inside bot1 — picks a random item every AUTOCAST_INTERVAL_SECS)
+# ══════════════════════════════════════════════════════════════════════════════
+AUTOCAST_ENABLED         = os.getenv("AUTOCAST_ENABLED", "1") != "0"
+AUTOCAST_INTERVAL_SECS   = _int("AUTOCAST_INTERVAL_SECS", 7200)     # 2 hours
+AUTOCAST_DELETE_PREVIOUS = True    # remove the previous auto-cast from each chat before sending the next one
+AUTOCAST_PROTECT_CONTENT = True    # block forwarding/saving of the broadcast
+AUTOCAST_STATE_FILE      = os.getenv("AUTOCAST_STATE_FILE", "autocast_state.json")
+
+# Add as many items as you like. Each cast picks one at random (every item is used once
+# before any repeats, and the same item is never sent twice in a row).
+#
+#   "type":    "video" | "photo" | "text"
+#   "media":   Telegram file_id OR a public URL   (not needed for "text")
+#             → file_ids are per-bot: send the video/photo to BOT1 as admin and it replies with the file_id
+#   "text":    caption / message, HTML allowed   (max 1024 chars with media, 4096 for text-only)
+#   "buttons": rows of buttons. Each button needs "text" and either
+#                "course": "<course_id>"   → opens that item in the sales bot
+#                "url":    "https://..."   → any link
+#
+AUTO_BROADCASTS = [
+    # {
+    #     "type": "video",
+    #     "media": "PASTE_FILE_ID_OR_URL",
+    #     "text": "🔥 <b>Bundle Offer</b>\nGet EVERYTHING for just <b>1,499₹ / 22$</b>!",
+    #     "buttons": [
+    #         [{"text": "🏷 Buy All Collection", "course": BUNDLE_ALL_ID}],
+    #         [{"text": "💬 Contact Admin", "url": ADMIN_CONTACT_URL}],
+    #     ],
+    # },
+    # {
+    #     "type": "photo",
+    #     "media": "PASTE_FILE_ID_OR_URL",
+    #     "text": "✨ New files added — check them out!",
+    #     "buttons": [[{"text": "🛒 Open Store", "url": f"https://t.me/{BOT2_USERNAME}"}]],
+    # },
+    # {
+    #     "type": "text",
+    #     "text": "⏰ <b>Last chance</b> — bundle price ends soon.",
+    #     "buttons": [[{"text": "🏷 Buy All", "course": BUNDLE_ALL_ID}]],
+    # },
+]
