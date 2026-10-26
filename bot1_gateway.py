@@ -6,7 +6,7 @@ import time
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject, StateFilter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
@@ -18,6 +18,7 @@ from config import (
     ADMIN_ID, BOT2_USERNAME, BUNDLE_ALL_BUTTON_TEXT, BUNDLE_ALL_ID, BUNDLE_PREFIX,
     BROADCAST_DELETE_SECS, MENU_DELETE_SECS, WELCOME_CAPTION, WELCOME_PHOTO, fmt_duration,
 )
+import autocast
 from db import aexec, fetch_all, supabase
 from stats import build_monthly_text, build_period_text, stats_keyboard
 
@@ -556,10 +557,71 @@ async def stats_handler(callback: types.CallbackQuery):
     await _render_stats(callback.message, callback.data.split(":", 1)[1])
 
 
+# ── ADMIN: auto broadcast controls ─────────────────────────────────────────────
+
+@dp.message(Command("autocast"))
+async def cmd_autocast(message: types.Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID:
+        return
+    arg = (command.args or "").strip().lower()
+    note = ""
+    if arg == "pause":
+        autocast.set_paused(True)
+        note = "⏸ Paused.\n\n"
+    elif arg == "resume":
+        autocast.set_paused(False)
+        note = "▶️ Resumed.\n\n"
+    elif arg == "now":
+        autocast.request_now()
+        note = "🚀 Casting within 30 seconds.\n\n"
+    await message.answer(note + autocast.status_text(), parse_mode="HTML")
+
+
+@dp.message(Command("autotest"))
+async def cmd_autotest(message: types.Message):
+    """Sends every valid auto-broadcast item to the admin only, so you can check them."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    items = autocast.valid_items()
+    if not items:
+        return await message.answer("❌ No valid items in <code>AUTO_BROADCASTS</code> (see config.py).", parse_mode="HTML")
+    await message.answer(f"👀 Previewing {len(items)} item(s)…")
+    for idx, item in items:
+        try:
+            await autocast.send_item(bot, message.chat.id, item, protect=False)
+        except Exception as e:
+            await message.answer(f"❌ Item #{idx} failed: <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+        await asyncio.sleep(0.5)
+
+
+# ── ADMIN: send any video/photo to get its file_id (for AUTO_BROADCASTS) ───────
+
+@dp.message(StateFilter(None), F.video | F.photo | F.document)
+async def media_file_id(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.video:
+        kind, fid = "video", message.video.file_id
+    elif message.photo:
+        kind, fid = "photo", message.photo[-1].file_id
+    elif message.document and (message.document.mime_type or "").startswith("video/"):
+        kind, fid = "video", message.document.file_id
+    else:
+        return
+    await message.answer(
+        f"🆔 <b>file_id</b> (for AUTO_BROADCASTS, type <code>{kind}</code>):\n\n<code>{fid}</code>",
+        parse_mode="HTML",
+    )
+
+
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    await dp.start_polling(bot)
+    cast_task = asyncio.create_task(autocast.autocast_loop(bot, _broadcast))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        cast_task.cancel()
 
 if __name__ == "__main__":
     asyncio.run(main())
